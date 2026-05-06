@@ -1,0 +1,37 @@
+# Example epistole config. Copy to epistole.toml and fill in.
+#
+# Production deployments should keep secrets in /etc/epistole.env
+# (0600 root:root) and template the values into this file via
+# envsubst at startup. Never commit a real config to a repo.
+
+# Listen address. Caddy / Traefik should reverse-proxy from
+# letters.<consumer-domain>.com to this bind.
+bind = "127.0.0.1:9090"
+
+# fjall keyspace directory. One process per directory.
+data_dir = "/var/lib/epistole/data"
+
+# Public URL — used to build confirm + unsubscribe links in outbound mail.
+base_url = "https://letters.example.com"
+
+# Brand identity for outbound mail.
+[brand]
+name = "Example Brand"
+from_address = "letters@example.com"
+reply_to = "contact@example.com"
+
+# SMTP relay (Postmark / Mailgun / etc.). Outbound IP needs SPF / DKIM /
+# DMARC records on whichever domain the from_address belongs to.
+[smtp]
+host = "smtp.postmarkapp.com"
+port = 587
+username = "REPLACE_WITH_POSTMARK_TOKEN"
+password = "REPLACE_WITH_POSTMARK_TOKEN"
+
+# HMAC secret for signing confirm/unsubscribe tokens. 32 bytes of
+# entropy minimum. Generate with: head -c 32 /dev/urandom | base64
+token_secret = "REPLACE_WITH_BASE64_RANDOM_32"
+
+# Bearer token required for POST /send. Operator-only.
+# Generate with: head -c 24 /dev/urandom | base64
+send_auth_token = "REPLACE_WITH_BASE64_RANDOM_24"

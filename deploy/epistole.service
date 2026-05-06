@@ -1,0 +1,32 @@
+[Unit]
+Description=epistole — sovereign newsletter service
+After=network.target
+
+[Service]
+Type=simple
+User=epistole
+Group=epistole
+WorkingDirectory=/var/lib/epistole
+ExecStart=/usr/local/bin/epistole --config /etc/epistole/epistole.toml
+EnvironmentFile=/etc/epistole.env
+Restart=always
+RestartSec=5
+
+# Hardening — match aletheia / kanon-server pattern
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/epistole
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+MemoryHigh=512M
+MemoryMax=1G
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

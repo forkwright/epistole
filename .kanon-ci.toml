@@ -1,0 +1,28 @@
+# Forge CI pipeline for forkwright/epistole.
+#
+# Mirrors the fleet-default Rust gate (fmt → check → clippy → nextest →
+# lint) with --jobs 8 caps so concurrent CI runs don't OOM menos. Keep
+# in sync with hamma / dictyon / harmonia until the workspace grows.
+
+[pipeline]
+stages = ["cargo fmt", "cargo check", "cargo clippy", "cargo nextest", "kanon lint"]
+
+[stages."cargo fmt"]
+cmd = "cargo fmt --all -- --check"
+timeout_secs = 300
+
+[stages."cargo check"]
+cmd = "cargo check --all-targets --jobs 8"
+timeout_secs = 900
+
+[stages."cargo clippy"]
+cmd = "cargo clippy --all-targets --jobs 8 -- -D warnings"
+timeout_secs = 900
+
+[stages."cargo nextest"]
+cmd = "cargo nextest run --build-jobs 8 --test-threads 8"
+timeout_secs = 1800
+
+[stages."kanon lint"]
+cmd = "kanon lint . --summary"
+timeout_secs = 600

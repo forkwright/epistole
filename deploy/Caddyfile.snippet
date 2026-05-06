@@ -1,0 +1,43 @@
+# Caddy reverse-proxy snippet for epistole.
+#
+# Drop into the host's main Caddyfile under the appropriate domain,
+# OR use as a per-site file at /etc/caddy/sites-enabled/<consumer>.caddy.
+#
+# Substitute <consumer-domain> with the consumer site's apex domain
+# (e.g. ardentleatherworks.com).
+
+letters.<consumer-domain>.com {
+    # Strict transport security + standard hardening headers.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+        # CSP: epistole's pages use a single inline <style> in the page head
+        # (maud's template inlines it). The rest is plain HTML.
+        Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
+    }
+
+    # Liveness probe — bypasses logging.
+    handle /healthz {
+        reverse_proxy 127.0.0.1:9090
+    }
+
+    # All public endpoints (subscribe/confirm/unsubscribe/archive) and the
+    # operator endpoint (/send) flow through the same reverse-proxy. /send
+    # auth is enforced inside epistole, not at the proxy.
+    handle {
+        reverse_proxy 127.0.0.1:9090 {
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    log {
+        output file /var/log/caddy/letters-access.log {
+            roll_size 50mb
+            roll_keep 7
+        }
+        format json
+    }
+}

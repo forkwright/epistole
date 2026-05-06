@@ -1,0 +1,7 @@
+target/
+*.swp
+.DS_Store
+*.local
+.env
+.env.local
+/data/
