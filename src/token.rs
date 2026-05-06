@@ -1,14 +1,20 @@
 //! HMAC-signed time-limited tokens for confirm + unsubscribe links.
 //!
 //! Wire format: `base64url(payload).base64url(signature)`
-//! where `payload = "{kind}|{email}|{exp_unix}"`. Signature is
-//! HMAC-SHA256 over the payload with the configured secret.
+//! where the payload contains `{kind}|{email_b64}|{exp_unix}`. The
+//! email is itself base64url-encoded inside the payload so a `|`
+//! character in a (RFC-legal) email local-part can't shift field
+//! boundaries — `splitn(3, '|')` is safe because every field's bytes
+//! are a closed alphabet.
+//!
+//! Signature is HMAC-SHA256 over the payload with the configured secret.
 //!
 //! Verification:
 //! 1. split on `.`
 //! 2. base64-decode both parts
 //! 3. recompute HMAC over the payload bytes; constant-time compare
-//! 4. parse fields; reject if `kind` mismatches or `exp_unix < now()`
+//! 4. parse fields; base64-decode email; reject if `kind` mismatches
+//!    or `exp_unix < now()`
 //!
 //! No replay-protection by design - confirm/unsubscribe operations are
 //! idempotent at the data level.
@@ -77,7 +83,7 @@ impl Token {
 }
 
 /// Sign + base64-encode a token. `secret` is the configured
-/// `token_secret` - must be at least 16 bytes; longer is fine.
+/// `token_secret` - must be at least 32 bytes (enforced at config load).
 ///
 /// # Errors
 ///
@@ -89,7 +95,13 @@ pub fn sign(token: &Token, secret: &[u8]) -> Result<String> {
             reason: "token_secret is empty".to_owned(),
         });
     }
-    let payload = format!("{}|{}|{}", token.kind.as_str(), token.email, token.exp_unix);
+    // Email is base64url-encoded inside the payload so any byte (including
+    // `|`, `\n`, `\0`, etc.) survives the `splitn(3, '|')` round-trip.
+    // Without this, an RFC-legal email with `|` in the local part would
+    // mint a token that the verifier mis-parses, locking that subscriber
+    // out forever.
+    let email_b64 = URL_SAFE_NO_PAD.encode(token.email.as_bytes());
+    let payload = format!("{}|{}|{}", token.kind.as_str(), email_b64, token.exp_unix);
     let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| Error::Config {
         reason: format!("HMAC key: {e}"),
     })?;
@@ -129,7 +141,11 @@ pub fn verify(raw: &str, secret: &[u8], now_unix: i64) -> Result<Token> {
         .next()
         .and_then(TokenKind::from_str)
         .ok_or(Error::InvalidToken)?;
-    let email = parts.next().ok_or(Error::InvalidToken)?.to_owned();
+    let email_b64 = parts.next().ok_or(Error::InvalidToken)?;
+    let email_bytes = URL_SAFE_NO_PAD
+        .decode(email_b64)
+        .map_err(|_| Error::InvalidToken)?;
+    let email = String::from_utf8(email_bytes).map_err(|_| Error::InvalidToken)?;
     let exp_unix: i64 = parts
         .next()
         .ok_or(Error::InvalidToken)?
@@ -162,6 +178,26 @@ mod tests {
         assert!(!signed.is_empty(), "sign produced a non-empty token");
         let verified = verify(&signed, secret, 0).expect("verify");
         assert_eq!(verified, tok);
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn round_trip_email_with_pipe_in_local_part() {
+        // RFC 5322 allows `|` in a quoted local-part. The earlier wire
+        // format (raw email between `|` separators) would have mis-parsed
+        // this; the base64-encoded inner email survives.
+        let secret = b"this-is-only-for-tests-32-bytes!";
+        let tok = Token::new(
+            TokenKind::Confirm,
+            "weird|name@example.com".into(),
+            9_999_999_999,
+        );
+        let signed = sign(&tok, secret).expect("sign");
+        let verified = verify(&signed, secret, 0).expect("verify");
+        assert_eq!(verified.email, "weird|name@example.com");
     }
 
     #[test]

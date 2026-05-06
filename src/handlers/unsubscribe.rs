@@ -13,7 +13,7 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 
 use crate::AppState;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::store::SubscriberState;
 use crate::templates;
 use crate::token::{TokenKind, verify};
@@ -32,16 +32,20 @@ impl std::fmt::Debug for Params {
     }
 }
 
-/// Handle `GET /unsubscribe`.
+/// Handle `GET /unsubscribe`. All rejection paths collapse to the same
+/// `200 + invalid-link` shape (membership-non-disclosure); the success
+/// path is the unsubscribed page.
 ///
 /// # Errors
 ///
-/// Same shape as `confirm::get` - invalid tokens render an expired-link
-/// page; everything else propagates.
+/// Returns [`Error::Store`] only — all other failures collapse into the
+/// invalid-link page.
 pub(crate) async fn get(
     State(state): State<AppState>,
     Query(p): Query<Params>,
 ) -> Result<impl IntoResponse> {
+    let invalid = || templates::invalid_token(&state.config.brand.name).into_response();
+
     let now = OffsetDateTime::now_utc();
     let token = match verify(
         &p.token,
@@ -49,13 +53,13 @@ pub(crate) async fn get(
         now.unix_timestamp(),
     ) {
         Ok(t) if t.kind == TokenKind::Unsubscribe => t,
-        _ => return Ok(templates::invalid_token(&state.config.brand.name).into_response()),
+        _ => return Ok(invalid()),
     };
 
-    let mut subscriber = state
-        .store
-        .subscriber_get(&token.email)?
-        .ok_or(Error::NotFound)?;
+    let Some(mut subscriber) = state.store.subscriber_get(&token.email)? else {
+        return Ok(invalid());
+    };
+
     if subscriber.state != SubscriberState::Unsubscribed {
         subscriber.state = SubscriberState::Unsubscribed;
         subscriber.unsubscribed_at = Some(now);

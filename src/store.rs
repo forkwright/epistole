@@ -123,6 +123,7 @@ impl Store {
     /// Returns [`Error::Store`] when fjall can't open the directory or
     /// create a partition.
     pub fn open(path: &Path) -> Result<Self> {
+        guard_against_nested_keyspace(path)?;
         let keyspace = FjallConfig::new(path).open().map_err(|e| Error::Store {
             reason: format!("open keyspace at {}: {e}", path.display()),
         })?;
@@ -173,6 +174,24 @@ impl Store {
         }
     }
 
+    /// Iterate every record in the `sends` partition. Used by tests +
+    /// (Phase 2) the archive page renderer.
+    ///
+    /// # Errors
+    ///
+    /// Each item resolves to [`Error::Store`] on fjall read or decode
+    /// failure.
+    pub fn iter_sends(&self) -> Result<impl Iterator<Item = Result<Send>>> {
+        Ok(self.sends.iter().map(|kv| {
+            let (_k, v) = kv.map_err(|e| Error::Store {
+                reason: format!("sends iter: {e}"),
+            })?;
+            serde_json::from_slice::<Send>(&v).map_err(|e| Error::Store {
+                reason: format!("sends decode: {e}"),
+            })
+        }))
+    }
+
     /// Insert or replace a subscriber record.
     ///
     /// # Errors
@@ -191,4 +210,30 @@ impl Store {
                 reason: format!("subscriber_put {}: {e}", subscriber.email),
             })
     }
+}
+
+/// Refuse to open a keyspace whose path is INSIDE another keyspace's
+/// `partitions/` subdirectory. This is a fleet footgun (per
+/// `feedback_fjall_nested_keyspace_pitfall.md`): nested keyspaces trap
+/// lsm-tree's V1-format check on later opens, leaving the data
+/// permanently un-readable.
+///
+/// We walk parent directories looking for a sibling `partitions/`
+/// directory whose name component would mean we're nested inside it.
+fn guard_against_nested_keyspace(path: &Path) -> Result<()> {
+    let mut cur = path.parent();
+    while let Some(p) = cur {
+        if p.file_name().and_then(|n| n.to_str()) == Some("partitions") {
+            return Err(Error::Store {
+                reason: format!(
+                    "refusing to open: {} is inside a parent keyspace's partitions/ directory \
+                     (nested keyspaces trap lsm-tree's V1-format check; pick a path outside any \
+                     existing fjall keyspace — see feedback_fjall_nested_keyspace_pitfall.md)",
+                    path.display()
+                ),
+            });
+        }
+        cur = p.parent();
+    }
+    Ok(())
 }

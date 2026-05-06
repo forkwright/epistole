@@ -23,6 +23,15 @@ tower_governor = "0.8"
 # timing oracles on /send)
 subtle = "2"
 
+# HTML sanitization for the Phase 2 archive page — strips javascript:/
+# data: URLs from markdown-rendered links. ammonia uses an allowlist
+# approach so any future tag/attr surface stays closed by default.
+ammonia = "4"
+
+# Lexicographic, monotonic, time-prefixed identifier for Send records.
+# Replaces wall-clock-nanosecond send_ids that collided on same-ns sends.
+ulid = "1"
+
 # HTML rendering (compile-time templates, type-safe, zero runtime deps)
 maud = { version = "0.27", features = ["axum"] }
 

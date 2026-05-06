@@ -23,7 +23,7 @@ use axum::{
     routing::{get, post},
 };
 use tower_governor::{
-    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+    GovernorError, GovernorLayer, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
 };
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -58,6 +58,40 @@ const SUBSCRIBE_BODY_LIMIT: usize = 4 * 1024; // 4 KiB
 const SEND_BODY_LIMIT: usize = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Rate-limit key extractor that ONLY trusts the LAST entry of the
+/// `X-Forwarded-For` header. Designed for deployment behind a single
+/// trusted reverse proxy (NPM) that sets XFF to the real client IP via
+/// `proxy_set_header X-Forwarded-For $remote_addr` (replace, not
+/// append). In that topology, the last entry is the real client IP and
+/// any earlier entries (which a hostile client can spoof) are ignored.
+///
+/// If XFF is missing entirely, fall back to `ConnectInfo` (the
+/// immediate peer). This handles direct connections (smoke tests,
+/// accidental bypass of NPM) without panicking.
+#[derive(Clone, Copy, Debug)]
+struct TrustedProxyExtractor;
+
+impl KeyExtractor for TrustedProxyExtractor {
+    type Key = std::net::IpAddr;
+
+    fn extract<B>(
+        &self,
+        req: &axum::http::Request<B>,
+    ) -> std::result::Result<Self::Key, GovernorError> {
+        if let Some(xff) = req.headers().get("x-forwarded-for")
+            && let Ok(s) = xff.to_str()
+            && let Some(last) = s.rsplit(',').next()
+            && let Ok(ip) = last.trim().parse::<std::net::IpAddr>()
+        {
+            return Ok(ip);
+        }
+        req.extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip())
+            .ok_or(GovernorError::UnableToExtractKey)
+    }
+}
+
 /// Build the axum router. Exposed so integration tests can assert
 /// against the same routing the production binary uses.
 ///
@@ -81,10 +115,17 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
     // ceiling. Background: tower_governor's algorithm is a token bucket
     // backed by `governor` (lock-free), so the layer adds ~microseconds.
     //
-    // SmartIpKeyExtractor honors X-Forwarded-For + X-Real-IP first, then
-    // falls back to ConnectInfo. This is what we want behind NPM (the
-    // reverse proxy sets X-Forwarded-For; without SmartIp every request
-    // would key on 127.0.0.1 and the rate limit would be global).
+    // Behind NPM, the reverse proxy ALWAYS sets X-Forwarded-For to a
+    // single hop: the real client IP. The previous SmartIpKeyExtractor
+    // implementation honored multi-hop XFF chains, which a hostile
+    // client can spoof — set XFF to `1.2.3.4, 5.6.7.8, ...` and SmartIp
+    // would key on `1.2.3.4`, defeating per-IP rate limiting.
+    //
+    // The TrustedProxyExtractor below ONLY accepts the LAST entry of
+    // X-Forwarded-For (the value NPM most-recently appended). Combined
+    // with NPM's `proxy_set_header X-Forwarded-For $remote_addr` config
+    // (documented in DEPLOY.md step 8a), the chain is one hop and
+    // unspoofable.
     //
     // The governor config has hardcoded values that always validate; the
     // unwrap below is defensive and triggers only on a typo at edit time.
@@ -96,7 +137,7 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
         GovernorConfigBuilder::default()
             .per_second(10) // refill: 1 token per 10s -> 6 tokens / minute
             .burst_size(6)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(TrustedProxyExtractor)
             .finish()
             .expect("governor config valid"),
     );

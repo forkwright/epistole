@@ -5,3 +5,4 @@ target/
 .env
 .env.local
 /data/
+.codex-last-message.txt

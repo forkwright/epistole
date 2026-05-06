@@ -274,3 +274,325 @@ async fn send_requires_bearer() {
         .expect("response");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// === Phase 1.5 audit-finding regression tests ===
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token() {
+    // Audit findings #7 / #18: a confirm token whose subscriber has
+    // since unsubscribed must NOT bring them back to Active. This test
+    // exercises the full state machine: subscribe → confirm → unsubscribe
+    // → replay original confirm token → should be invalid-link, NOT
+    // re-active.
+    use secrecy::ExposeSecret;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+
+    // 1. POST /subscribe
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", "203.0.113.50")
+                .body(Body::from("email=victim%40example.com"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 2. Mint a confirm token (capturing it for replay later).
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let confirm_tok = epistole::token::Token::new(
+        epistole::token::TokenKind::Confirm,
+        "victim@example.com".to_owned(),
+        now + 3600,
+    );
+    let confirm_signed =
+        epistole::token::sign(&confirm_tok, cfg.token_secret.expose_secret().as_bytes())
+            .expect("sign");
+
+    // 3. Confirm → Active
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/confirm?token={confirm_signed}"))
+                .header("x-forwarded-for", "203.0.113.50")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 4. Unsubscribe with a fresh unsub token.
+    let unsub_tok = epistole::token::Token::new(
+        epistole::token::TokenKind::Unsubscribe,
+        "victim@example.com".to_owned(),
+        now + 3600,
+    );
+    let unsub_signed =
+        epistole::token::sign(&unsub_tok, cfg.token_secret.expose_secret().as_bytes())
+            .expect("sign");
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/unsubscribe?token={unsub_signed}"))
+                .header("x-forwarded-for", "203.0.113.50")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 5. Replay the ORIGINAL confirm token. Without the fix, this
+    //    re-flips the subscriber to Active. With the fix, the handler
+    //    returns the invalid-link page and state stays Unsubscribed.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/confirm?token={confirm_signed}"))
+                .header("x-forwarded-for", "203.0.113.50")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    let sub = store
+        .subscriber_get("victim@example.com")
+        .expect("read")
+        .expect("subscriber");
+    assert!(
+        matches!(sub.state, epistole::store::SubscriberState::Unsubscribed),
+        "stale confirm token must not re-Activate an Unsubscribed address (was {:?})",
+        sub.state
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn subscribe_rejects_display_name_mailbox_form() {
+    // Audit finding #9: `email_address::is_valid` with default options
+    // accepts the full RFC 5322 mailbox form, which lets an attacker
+    // submit `Pwned <victim@example.com>` and email-bomb the victim.
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", "203.0.113.51")
+                .body(Body::from("email=Pwned+%3Cvictim%40example.com%3E"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn token_round_trip_survives_pipe_in_email() {
+    // Audit finding #9 (second half): email containing `|` in local part
+    // is RFC-legal but the old token format mis-parsed via `splitn(3, '|')`.
+    // After the base64-encoded inner-email fix, this round-trips.
+    let secret = b"this-is-only-for-tests-32-bytes!";
+    let tok = epistole::token::Token::new(
+        epistole::token::TokenKind::Confirm,
+        "weird|name@example.com".to_owned(),
+        9_999_999_999,
+    );
+    let signed = epistole::token::sign(&tok, secret).expect("sign");
+    let verified = epistole::token::verify(&signed, secret, 0).expect("verify");
+    assert_eq!(verified.email, "weird|name@example.com");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn rate_limit_keys_on_last_xff_entry_only() {
+    // Audit findings #5 / #14: rotating X-Forwarded-For chain does NOT
+    // bypass per-IP rate limiting. We use a CONSTANT last entry across
+    // 8 requests (simulating NPM setting it to the real client IP) but
+    // a varying earlier hop (simulating a hostile client trying to spoof
+    // its way to a fresh bucket). The 7th request must 429.
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+
+    let mut last_status = StatusCode::OK;
+    for i in 0..8u32 {
+        let body = format!("email=spoofer{i}%40example.com");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/subscribe")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    // Rotating earlier hop, but the LAST entry (NPM-set)
+                    // is constant: 198.51.100.99. The extractor MUST
+                    // key on .99, not the rotating prefix.
+                    .header("x-forwarded-for", format!("10.0.0.{i}, 198.51.100.99"))
+                    .body(Body::from(body))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        last_status = resp.status();
+    }
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rotating XFF prefix must not bypass per-IP rate limiting"
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn confirm_with_unknown_subscriber_returns_200_invalid_page_not_404() {
+    // Audit finding #12: confirm/unsubscribe must not 404 when the
+    // subscriber row is missing — that's a membership-disclosure oracle.
+    // Both branches return 200 + the same invalid-link page.
+    use secrecy::ExposeSecret;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+
+    // Mint a valid confirm token for an address that's never been subscribed.
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let tok = epistole::token::Token::new(
+        epistole::token::TokenKind::Confirm,
+        "ghost@example.com".to_owned(),
+        now + 3600,
+    );
+    let signed =
+        epistole::token::sign(&tok, cfg.token_secret.expose_secret().as_bytes()).expect("sign");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/confirm?token={signed}"))
+                .header("x-forwarded-for", "203.0.113.52")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK, "ghost lookup must not 404");
+    let body = resp.into_body().collect().await.expect("body").to_bytes();
+    let body_str = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        body_str.contains("expired"),
+        "expected invalid-link page (membership-disclosure defense), got: {}",
+        &body_str[..body_str.len().min(200)]
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn send_javascript_url_in_markdown_is_sanitized() {
+    // Audit findings #10 / #20: javascript: / data: URLs in markdown
+    // links must be stripped (latent stored-XSS for Phase 2 archive).
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(
+        Arc::clone(&store),
+        Arc::new(test_config(tmp.path().to_path_buf())),
+    );
+
+    let payload = r#"{"subject":"x","markdown":"[click](javascript:alert(1)) and [also](data:text/html,evil)"}"#;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/send")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer operator-bearer-test")
+                .header("x-forwarded-for", "203.0.113.53")
+                .body(Body::from(payload.to_owned()))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Walk the sends partition; the most-recent record's body_html
+    // must NOT contain javascript: or data: hrefs.
+    let mut found_html: Option<String> = None;
+    for entry in store.iter_sends().expect("iter") {
+        let send = entry.expect("decode");
+        found_html = Some(send.body_html);
+    }
+    let html = found_html.expect("at least one send");
+    assert!(
+        !html.contains("javascript:") && !html.contains("data:text"),
+        "rendered body_html still contains a dangerous URL scheme: {html}"
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn send_unauth_does_not_parse_body() {
+    // Audit finding #19: unauthenticated /send must not pay JSON-parse
+    // cost. We verify by sending a body that WOULD fail JSON parsing
+    // (so a 400 would be the parse-first path) and assert we got 401
+    // instead. If the bearer compare runs first, we get 401 even on
+    // garbage input.
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/send")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", "203.0.113.54")
+                .body(Body::from("not-valid-json{{{"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "auth must short-circuit BEFORE body parse on /send"
+    );
+}

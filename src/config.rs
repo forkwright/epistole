@@ -100,10 +100,18 @@ impl Config {
     /// fields are taken verbatim. A value that doesn't look like
     /// `${VAR}` is used as-is.
     ///
+    /// After resolution, secret strength is validated:
+    ///   - `token_secret` — minimum 32 bytes (`HMAC-SHA256` keys should
+    ///     match the digest's 32-byte security parameter)
+    ///   - `send_auth_token` — minimum 24 bytes
+    ///   - blocklist of common placeholder strings (`change-me`,
+    ///     `phase-0-stub`, `REPLACE_WITH`, etc.)
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] if the file cannot be read or parsed,
-    /// or if an `${VAR}` reference cannot be resolved.
+    /// if an `${VAR}` reference cannot be resolved, or if a secret
+    /// fails the strength check.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read_to_string(path).map_err(|e| Error::Config {
             reason: format!("read {}: {e}", path.display()),
@@ -114,8 +122,57 @@ impl Config {
         cfg.token_secret = resolve_secret_env(&cfg.token_secret, "token_secret")?;
         cfg.send_auth_token = resolve_secret_env(&cfg.send_auth_token, "send_auth_token")?;
         cfg.smtp.password = resolve_secret_env(&cfg.smtp.password, "smtp.password")?;
+        validate_secret_strength(&cfg.token_secret, "token_secret", 32)?;
+        validate_secret_strength(&cfg.send_auth_token, "send_auth_token", 24)?;
         Ok(cfg)
     }
+}
+
+/// Patterns that operator runbooks have used as fill-the-blank text in
+/// `epistole.toml`. Any one appearing in a production secret means the
+/// deploy missed the secret-substitution step; the service refuses to
+/// start. Extend if a new template adds another pattern.
+const BLOCKED_SECRET_SUBSTRS: &[&str] = &[
+    "change-me",
+    "changeme",
+    "replace_with",
+    "replace-me",
+    "phase-0-stub",
+    "phase0stub",
+    "your-secret-here",
+    "example",
+    "default",
+    "placeholder",
+    "todo",
+];
+
+/// Reject placeholder / weak secrets at startup. Any production deploy
+/// that ships with a literal `REPLACE_WITH...` or `phase-0-stub...` in
+/// the env file should fail to start, not silently accept a guessable
+/// `HMAC` key.
+fn validate_secret_strength(value: &SecretString, field: &str, min_bytes: usize) -> Result<()> {
+    use secrecy::ExposeSecret;
+    let raw = value.expose_secret();
+    if raw.len() < min_bytes {
+        return Err(Error::Config {
+            reason: format!(
+                "{field}: too short — got {} bytes, minimum {min_bytes}",
+                raw.len()
+            ),
+        });
+    }
+    let lower = raw.to_ascii_lowercase();
+    for pattern in BLOCKED_SECRET_SUBSTRS {
+        if lower.contains(pattern) {
+            return Err(Error::Config {
+                reason: format!(
+                    "{field}: contains placeholder pattern '{pattern}' — generate a real secret \
+                     (head -c 32 /dev/urandom | base64 -w 0) and set it in /etc/epistole.env"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// If `value` looks like `${VAR}`, look up `VAR` in the environment
