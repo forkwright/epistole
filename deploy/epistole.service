@@ -71,6 +71,11 @@ MemoryMax=1G
 TasksMax=128
 LimitNOFILE=4096
 
+# Files this service creates (the fjall keyspace) should not be world-
+# readable by default. 0077 means user-only; group adds nothing the
+# epistole runtime user needs.
+UMask=0077
+
 StandardOutput=journal
 StandardError=journal
 
