@@ -89,12 +89,7 @@ pub fn sign(token: &Token, secret: &[u8]) -> Result<String> {
             reason: "token_secret is empty".to_owned(),
         });
     }
-    let payload = format!(
-        "{}|{}|{}",
-        token.kind.as_str(),
-        token.email,
-        token.exp_unix
-    );
+    let payload = format!("{}|{}|{}", token.kind.as_str(), token.email, token.exp_unix);
     let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| Error::Config {
         reason: format!("HMAC key: {e}"),
     })?;
@@ -158,7 +153,11 @@ mod tests {
     )]
     fn round_trip_confirm() {
         let secret = b"this-is-only-for-tests-32-bytes!";
-        let tok = Token::new(TokenKind::Confirm, "alice@example.com".into(), 9_999_999_999);
+        let tok = Token::new(
+            TokenKind::Confirm,
+            "alice@example.com".into(),
+            9_999_999_999,
+        );
         let signed = sign(&tok, secret).expect("sign");
         assert!(!signed.is_empty(), "sign produced a non-empty token");
         let verified = verify(&signed, secret, 0).expect("verify");
