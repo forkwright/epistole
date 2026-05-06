@@ -118,14 +118,85 @@ If aletheia is on Tailscale only, point to the operator's Cloudflare Tunnel CNAM
 dig +short letters.ardentleatherworks.com
 ```
 
-## Step 8 — Caddy reverse-proxy
+## Step 8 — Reverse-proxy (NPM, on menos)
 
-```bash
-sudo cp ~/dev/epistole/deploy/Caddyfile.snippet /etc/caddy/sites-enabled/letters-ardentleatherworks.caddy
-sudo sed -i 's|<consumer-domain>|ardentleatherworks.com|g' /etc/caddy/sites-enabled/letters-ardentleatherworks.caddy
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
+> **Note**: the original runbook assumed Caddy. The actual menos topology runs **Nginx Proxy Manager (NPM)** at the gateway pod (`100.74.109.2:443`). NPM does TLS termination via a wildcard `*.lan` (LAN) cert + Cloudflare-fronted public certs. Adding a new public host is a UI-driven operation; the steps below are the click-path plus the fields that matter for security.
+
+### 8a — Add the proxy host in NPM
+
+Open NPM at `https://npm.lan` → **Hosts → Proxy Hosts → Add Proxy Host**.
+
+**Details tab:**
+
+| Field | Value |
+|---|---|
+| Domain Names | `letters.ardentleatherworks.com` |
+| Scheme | `http` |
+| Forward Hostname | `127.0.0.1` (epistole binds to loopback on the same box as NPM, OR the LAN IP of menos if NPM is on a different host) |
+| Forward Port | `9091` |
+| Cache Assets | OFF |
+| Block Common Exploits | **ON** |
+| Websockets Support | OFF (epistole is plain HTTP) |
+| Access List | (leave at default unless you want IP allowlisting) |
+
+**SSL tab:**
+
+| Field | Value |
+|---|---|
+| SSL Certificate | Request a new SSL certificate (Let's Encrypt) |
+| Force SSL | **ON** |
+| HTTP/2 Support | ON |
+| HSTS Enabled | **ON** |
+| HSTS Subdomains | OFF (only the `letters.` subdomain) |
+
+**Advanced tab — paste the following Nginx custom config**:
+
+```nginx
+# === epistole hardening at the proxy edge ===
+
+# Defense-in-depth body cap. epistole's tower_http RequestBodyLimitLayer
+# enforces per-route caps (4 KiB / 256 KiB), but rejecting at NPM saves
+# the full TCP round-trip + tower middleware traversal.
+client_max_body_size 256k;
+
+# X-Forwarded-For trust: REPLACE the incoming chain rather than APPEND.
+# Without this, a hostile client sets X-Forwarded-For: 1.2.3.4 in their
+# request and tower_governor's SmartIpKeyExtractor uses 1.2.3.4 as the
+# rate-limit key — bypassing per-IP enforcement. proxy_set_header
+# overrides any client-supplied value.
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+
+# Conservative timeouts. epistole responds to subscribe/confirm in ms;
+# anything slower is either a slow client (drop) or a runaway handler
+# (which tower_http TimeoutLayer would have already aborted at 10s).
+proxy_connect_timeout 5s;
+proxy_send_timeout 15s;
+proxy_read_timeout 15s;
+
+# Disable buffering for the streaming response on /healthz; harmless
+# elsewhere (handler responses are tiny).
+proxy_buffering off;
+
+# Strip headers that shouldn't be coming through.
+proxy_set_header Host $host;
+proxy_hide_header X-Powered-By;
+
+# Forensic correlation: forward the request id into epistole logs.
+proxy_set_header X-Request-Id $request_id;
+
+# Hardening response headers (NPM sets HSTS via the SSL tab; the rest
+# duplicate what epistole could set itself but adding here makes the
+# proxy the single source of truth):
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 ```
+
+Save → enable → wait for the cert challenge.
 
 End-to-end probe:
 
@@ -133,6 +204,69 @@ End-to-end probe:
 curl -sf https://letters.ardentleatherworks.com/healthz
 # -> ok
 ```
+
+### 8b — Verify CrowdSec is parsing the new proxy host
+
+CrowdSec already reads NPM's per-proxy-host log files (`/data/npm/data/logs/proxy-host-*_access.log`) under acquis.yaml's nginx source. The custom `forkwright/epistole-abuse` scenario triggers when one IP gets 5+ 4xx responses (401/413/429/400) from `letters.ardentleatherworks.com` inside 60s, banning at the firewall for 4 hours.
+
+Confirm the scenario is loaded:
+
+```bash
+sudo podman exec crowdsec cscli scenarios list | grep epistole
+# forkwright/epistole-abuse  enabled,local
+```
+
+Trigger from a test IP (do NOT do this from your real IP — you'll ban yourself for 4h):
+
+```bash
+for i in {1..10}; do curl -s -X POST https://letters.ardentleatherworks.com/subscribe \
+  -H "X-Forwarded-For: 198.51.100.99" -d email=test@example.com -o /dev/null -w "%{http_code}\n"; done
+sudo podman exec crowdsec cscli decisions list | grep 198.51.100
+```
+
+(NPM strips X-Forwarded-For per the snippet above, so this test won't actually fire — to test, hit the endpoint directly from a test source IP rather than spoofing the header.)
+
+## Step 8c — Cloudflare edge protection (recommended)
+
+epistole sits behind Cloudflare proxying for `letters.ardentleatherworks.com` (orange cloud). Cloudflare provides DDoS scrubbing and bot-fight by default; two Page Rules / WAF rules tighten the public-internet attack surface before requests even reach NPM.
+
+### Rate-limit rule
+
+Cloudflare Dashboard → **Security → WAF → Rate limiting rules → Create rule**.
+
+| Field | Value |
+|---|---|
+| Rule name | `epistole-subscribe` |
+| Field | `URI Path` equals `/subscribe` AND `hostname` equals `letters.ardentleatherworks.com` |
+| Characteristics | `IP` |
+| Requests per period | `5` |
+| Period | `1 minute` |
+| Action | `Block` |
+| Duration | `5 minutes` |
+
+This is the **first** line of defense; epistole's `tower_governor` (6/min) is the second; CrowdSec's `forkwright/epistole-abuse` (5 4xx responses → 4h ban) is the third.
+
+### Bot Fight Mode
+
+Cloudflare Dashboard → **Security → Bots → Bot Fight Mode** → ON.
+
+Catches automated scrapers + low-effort form-fillers; legitimate visitors are unaffected.
+
+### Optional: Cloudflare Access for /send
+
+If you want zero-trust auth on the operator endpoint (defense beyond the bearer token):
+
+Cloudflare Dashboard → **Zero Trust → Access → Applications → Add an application → Self-hosted**.
+
+| Field | Value |
+|---|---|
+| Application Name | `epistole-send` |
+| Subdomain | `letters` |
+| Domain | `ardentleatherworks.com` |
+| Path | `/send` |
+| Identity providers | One-time PIN to your email |
+
+After enabling, `POST /send` requires a CF-Access JWT in addition to the bearer token. Even a leaked `send_auth_token` is unusable without your CF identity.
 
 ## Step 9 — DMARC record (recommended)
 
