@@ -9,6 +9,7 @@ use axum::{Json, extract::State, http::HeaderMap};
 use pulldown_cmark::{Options, Parser, html};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
 use crate::AppState;
@@ -47,7 +48,25 @@ pub(crate) async fn post(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
     let expected = state.config.send_auth_token.expose_secret();
-    if presented.is_empty() || presented != expected {
+    // Constant-time compare to defend against timing oracles. A naive
+    // `presented != expected` short-circuits on first byte mismatch and
+    // leaks the prefix length over many requests; ct_eq is uniform.
+    let presented_bytes = presented.as_bytes();
+    let expected_bytes = expected.as_bytes();
+    let length_match: bool = presented_bytes.len().ct_eq(&expected_bytes.len()).into();
+    let bytes_match: bool = if length_match {
+        presented_bytes.ct_eq(expected_bytes).into()
+    } else {
+        // Still run a constant-time op against `expected_bytes` so the
+        // total work is independent of length match. The Choice-typed
+        // result is intentionally discarded — its only purpose is the
+        // CPU work. We do NOT use `let _ =` here because that drops the
+        // wrapper, which clippy::no-silent-result-swallow flags; the
+        // pattern below makes the discard explicit + lint-clean.
+        let _: subtle::Choice = expected_bytes.ct_eq(expected_bytes);
+        false
+    };
+    if presented.is_empty() || !(length_match && bytes_match) {
         return Err(Error::Unauthorized);
     }
 

@@ -10,6 +10,10 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+#[cfg(test)]
+#[path = "config_env_tests.rs"]
+mod config_env_tests;
+
 /// Server configuration. Loaded from a TOML file at startup; never
 /// reloaded - restart the service to apply changes.
 #[derive(Deserialize)]
@@ -85,18 +89,54 @@ impl std::fmt::Debug for Smtp {
 }
 
 impl Config {
-    /// Load and parse the TOML config at `path`.
+    /// Load and parse the TOML config at `path`. Secrets that match
+    /// `${VAR}` syntax are looked up from the process environment after
+    /// TOML parsing — this keeps the on-disk config free of secrets so
+    /// the file can be world-readable (or at least file-system-shared)
+    /// while real credentials live in `/etc/epistole.env` (0600 root).
+    ///
+    /// Substitution is intentionally narrow: only `token_secret`,
+    /// `send_auth_token`, and `smtp.password` are env-resolved. Other
+    /// fields are taken verbatim. A value that doesn't look like
+    /// `${VAR}` is used as-is.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] if the file cannot be read or parsed.
+    /// Returns [`Error::Config`] if the file cannot be read or parsed,
+    /// or if an `${VAR}` reference cannot be resolved.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read_to_string(path).map_err(|e| Error::Config {
             reason: format!("read {}: {e}", path.display()),
         })?;
-        let cfg: Self = toml::from_str(&bytes).map_err(|e| Error::Config {
+        let mut cfg: Self = toml::from_str(&bytes).map_err(|e| Error::Config {
             reason: format!("parse {}: {e}", path.display()),
         })?;
+        cfg.token_secret = resolve_secret_env(&cfg.token_secret, "token_secret")?;
+        cfg.send_auth_token = resolve_secret_env(&cfg.send_auth_token, "send_auth_token")?;
+        cfg.smtp.password = resolve_secret_env(&cfg.smtp.password, "smtp.password")?;
         Ok(cfg)
+    }
+}
+
+/// If `value` looks like `${VAR}`, look up `VAR` in the environment
+/// and return its value. Otherwise return the original. Empty results
+/// are an error: a misconfigured deploy that leaves `${TOKEN_SECRET}`
+/// unset MUST not silently fall back to the literal string — that
+/// would mint forgeable HMACs against the literal `${TOKEN_SECRET}`.
+fn resolve_secret_env(value: &SecretString, field: &str) -> Result<SecretString> {
+    use secrecy::ExposeSecret;
+    let raw = value.expose_secret();
+    if let Some(name) = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+        let resolved = std::env::var(name).map_err(|_| Error::Config {
+            reason: format!("{field}: ${{{name}}} referenced but env var unset"),
+        })?;
+        if resolved.is_empty() {
+            return Err(Error::Config {
+                reason: format!("{field}: ${{{name}}} env var is empty"),
+            });
+        }
+        Ok(SecretString::from(resolved))
+    } else {
+        Ok(value.clone())
     }
 }

@@ -5,7 +5,7 @@
 # in sync with hamma / dictyon / harmonia until the workspace grows.
 
 [pipeline]
-stages = ["cargo fmt", "cargo check", "cargo clippy", "cargo nextest", "kanon lint"]
+stages = ["cargo fmt", "cargo check", "cargo clippy", "cargo nextest", "kanon lint", "cargo-audit", "cargo-deny"]
 
 [stages."cargo fmt"]
 cmd = "cargo fmt --all -- --check"
