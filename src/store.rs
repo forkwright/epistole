@@ -212,28 +212,126 @@ impl Store {
     }
 }
 
-/// Refuse to open a keyspace whose path is INSIDE another keyspace's
-/// `partitions/` subdirectory. This is a fleet footgun (per
+/// Refuse to open a keyspace whose path resolves INSIDE another
+/// keyspace's `partitions/` subdirectory. This is a fleet footgun (per
 /// `feedback_fjall_nested_keyspace_pitfall.md`): nested keyspaces trap
 /// lsm-tree's V1-format check on later opens, leaving the data
 /// permanently un-readable.
 ///
-/// We walk parent directories looking for a sibling `partitions/`
-/// directory whose name component would mean we're nested inside it.
+/// Reaudit finding #30: the previous implementation walked the lexical
+/// path components only, so a symlink like `/tmp/data ->
+/// /var/lib/epistole/data/partitions/sends` bypassed the check —
+/// `/tmp/data` has no `partitions` ancestor lexically, but the
+/// canonical destination does. We now:
+///   1. Canonicalize the path's parent (the path itself may not exist
+///      yet — fjall creates it). Symlinks resolve to their targets.
+///   2. Walk the canonical path's components.
+///   3. Reject if any ancestor name is `partitions`.
 fn guard_against_nested_keyspace(path: &Path) -> Result<()> {
-    let mut cur = path.parent();
+    // The path may not exist yet (fjall creates it). Canonicalize the
+    // nearest existing ancestor and join the remaining path components.
+    let canonical = canonicalize_with_nonexistent(path).map_err(|e| Error::Store {
+        reason: format!("canonicalize {}: {e}", path.display()),
+    })?;
+
+    let mut cur = canonical.parent();
     while let Some(p) = cur {
         if p.file_name().and_then(|n| n.to_str()) == Some("partitions") {
             return Err(Error::Store {
                 reason: format!(
-                    "refusing to open: {} is inside a parent keyspace's partitions/ directory \
-                     (nested keyspaces trap lsm-tree's V1-format check; pick a path outside any \
-                     existing fjall keyspace — see feedback_fjall_nested_keyspace_pitfall.md)",
-                    path.display()
+                    "refusing to open: {} canonicalizes to {} which is inside a parent \
+                     keyspace's partitions/ directory (nested keyspaces trap lsm-tree's \
+                     V1-format check; pick a path outside any existing fjall keyspace — \
+                     see feedback_fjall_nested_keyspace_pitfall.md)",
+                    path.display(),
+                    canonical.display()
                 ),
             });
         }
         cur = p.parent();
     }
     Ok(())
+}
+
+/// Canonicalize `path`, walking up to the nearest existing ancestor and
+/// re-appending the missing tail. Symlinks resolve to their targets.
+fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    // Walk up to the first existing ancestor.
+    let mut existing: &Path = &absolute;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        match existing.parent() {
+            Some(parent) if parent != existing => {
+                if let Some(name) = existing.file_name() {
+                    tail.push(name);
+                }
+                existing = parent;
+            }
+            _ => break,
+        }
+    }
+
+    let mut canonical = std::fs::canonicalize(existing)?;
+    for component in tail.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+#[cfg(test)]
+mod store_guard_tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn rejects_symlink_into_nested_partition_dir() {
+        // Reaudit #30 regression: a symlink whose target is inside a
+        // parent keyspace's partitions/ directory must be rejected.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let real_keyspace = tmp.path().join("real-keyspace");
+        let real_partition = real_keyspace.join("partitions").join("sends");
+        std::fs::create_dir_all(&real_partition).expect("create real");
+
+        let symlink = tmp.path().join("sneaky-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_partition, &symlink).expect("symlink");
+
+        let result = guard_against_nested_keyspace(&symlink);
+        assert!(
+            result.is_err(),
+            "guard must reject symlink that resolves into a parent partitions/ dir"
+        );
+        let err = match result {
+            Ok(()) => unreachable!("asserted is_err above"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("partitions"),
+            "error should reference the partitions ancestor, got: {msg}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn allows_clean_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("subdir-that-does-not-exist-yet");
+        guard_against_nested_keyspace(&path).expect("clean path passes");
+    }
 }

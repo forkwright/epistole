@@ -154,6 +154,44 @@ Open NPM at `https://npm.lan` → **Hosts → Proxy Hosts → Add Proxy Host**.
 ```nginx
 # === epistole hardening at the proxy edge ===
 
+# === Cloudflare real-IP restoration ===
+# CRITICAL: with Cloudflare orange-cloud in front of NPM, $remote_addr
+# is the Cloudflare edge IP, NOT the visitor. Without these directives,
+# X-Forwarded-For below would be set to the edge IP and one abusive
+# client could exhaust the rate-limit bucket for unrelated visitors on
+# the same edge. (Reaudit finding #32.)
+#
+# The CIDR list is Cloudflare's official trusted ranges; refresh from
+# https://www.cloudflare.com/ips-v4 + /ips-v6 if Cloudflare expands.
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;
+
+# After real-IP restoration, $remote_addr is the visitor IP (not the
+# Cloudflare edge), so the X-Forwarded-For replacement below carries
+# the real client identity to epistole.
+
 # Defense-in-depth body cap. epistole's tower_http RequestBodyLimitLayer
 # enforces per-route caps (4 KiB / 256 KiB), but rejecting at NPM saves
 # the full TCP round-trip + tower middleware traversal.
@@ -161,8 +199,8 @@ client_max_body_size 256k;
 
 # X-Forwarded-For trust: REPLACE the incoming chain rather than APPEND.
 # Without this, a hostile client sets X-Forwarded-For: 1.2.3.4 in their
-# request and tower_governor's SmartIpKeyExtractor uses 1.2.3.4 as the
-# rate-limit key — bypassing per-IP enforcement. proxy_set_header
+# request and tower_governor's TrustedProxyExtractor would use 1.2.3.4
+# as the rate-limit key — bypassing per-IP enforcement. proxy_set_header
 # overrides any client-supplied value.
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Real-IP $remote_addr;
@@ -198,12 +236,28 @@ add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
 Save → enable → wait for the cert challenge.
 
-End-to-end probe:
+End-to-end probes:
 
 ```bash
+# 1. Liveness — should return "ok"
 curl -sf https://letters.ardentleatherworks.com/healthz
-# -> ok
+
+# 2. Real-IP-restoration probe — must surface the visitor IP, not a
+#    Cloudflare edge. Trigger from a known IP, then check both layers.
+curl -sf https://letters.ardentleatherworks.com/subscribe \
+  -d email=runbook-probe@example.com -X POST > /dev/null
+
+# 2a. NPM access log shows the visitor IP (not 162.158.x.x / 172.64.x.x)
+sudo tail -1 /storage/npm/data/logs/proxy-host-*_access.log
+
+# 2b. epistole journal shows the visitor IP in the rate-limit key
+#     (look for the email_hmac_short field — the request itself
+#      doesn't echo IP, but the corresponding NPM line should)
+sudo journalctl --user -u menos-daimon-* 2>/dev/null || \
+  sudo journalctl -u epistole.service --since "1 min ago" | grep "confirm link minted"
 ```
+
+If NPM logs show a Cloudflare edge IP (162.158.x.x or 172.64.x.x range), the `set_real_ip_from` step didn't take — re-check the CIDR list against current Cloudflare advertised ranges.
 
 ### 8b — Verify CrowdSec is parsing the new proxy host
 

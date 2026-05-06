@@ -140,6 +140,11 @@ impl Config {
 /// `epistole.toml`. Any one appearing in a production secret means the
 /// deploy missed the secret-substitution step; the service refuses to
 /// start. Extend if a new template adds another pattern.
+///
+/// Reaudit finding #29 added the runbook-literal patterns: codex's
+/// kimi-4 agent demonstrated that `send_auth_token = "<SEND_AUTH_TOKEN
+/// from step 4>"` (verbatim from DEPLOY.md) booted the service with
+/// the public literal as the bearer token.
 const BLOCKED_SECRET_SUBSTRS: &[&str] = &[
     "change-me",
     "changeme",
@@ -152,6 +157,13 @@ const BLOCKED_SECRET_SUBSTRS: &[&str] = &[
     "default",
     "placeholder",
     "todo",
+    // DEPLOY.md template literals — reaudit #29.
+    "from step",
+    "<token_secret",
+    "<send_auth_token",
+    "<smtp_password",
+    "<base64_random",
+    "<postmark_token",
 ];
 
 /// Reject placeholder / weak secrets at startup. Any production deploy
@@ -183,15 +195,39 @@ fn validate_secret_strength(value: &SecretString, field: &str, min_bytes: usize)
     Ok(())
 }
 
-/// If `value` looks like `${VAR}`, look up `VAR` in the environment
-/// and return its value. Otherwise return the original. Empty results
-/// are an error: a misconfigured deploy that leaves `${TOKEN_SECRET}`
-/// unset MUST not silently fall back to the literal string — that
-/// would mint forgeable HMACs against the literal `${TOKEN_SECRET}`.
+/// If `value` is exactly one valid `${VAR}` env reference, look up
+/// `VAR` and return its value. Anything else — extra braces, leading or
+/// trailing whitespace, malformed name, partial substitution, embedded
+/// `${...}` inside a longer literal — is an error.
+///
+/// Reaudit finding #29: the previous implementation accepted ANY input
+/// that didn't strip cleanly to `${...}` as a literal secret. So
+/// `${TOKEN_SECRET}}padding` (typo with extra brace), `  ${TOKEN_SECRET}`
+/// (whitespace), or `${TOKEN_SECRET} (token)` (operator added a comment)
+/// all silently became the literal string used as the HMAC key. With
+/// the strict regex below, every malformed reference fails closed.
 fn resolve_secret_env(value: &SecretString, field: &str) -> Result<SecretString> {
     use secrecy::ExposeSecret;
     let raw = value.expose_secret();
-    if let Some(name) = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+
+    // If the value contains `${` ANYWHERE, it must be the entire value
+    // and match `^\$\{[A-Z_][A-Z0-9_]*\}$`. Anything else is a deploy
+    // mistake.
+    if raw.contains("${") {
+        if !is_valid_env_ref(raw) {
+            return Err(Error::Config {
+                reason: format!(
+                    "{field}: malformed env reference '{raw}' — expected exactly '${{NAME}}' \
+                     where NAME matches [A-Z_][A-Z0-9_]*. Trim whitespace, fix braces, and \
+                     don't embed the reference in a larger string."
+                ),
+            });
+        }
+        // raw is `${NAME}`; strip and look up.
+        let name = raw
+            .strip_prefix("${")
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(raw);
         let resolved = std::env::var(name).map_err(|_| Error::Config {
             reason: format!("{field}: ${{{name}}} referenced but env var unset"),
         })?;
@@ -200,8 +236,28 @@ fn resolve_secret_env(value: &SecretString, field: &str) -> Result<SecretString>
                 reason: format!("{field}: ${{{name}}} env var is empty"),
             });
         }
-        Ok(SecretString::from(resolved))
-    } else {
-        Ok(value.clone())
+        return Ok(SecretString::from(resolved));
     }
+
+    // No `${` in the value — caller passed a literal. Caller chains a
+    // strength check (see `validate_secret_strength`) which catches the
+    // dangerous-literal cases.
+    Ok(value.clone())
+}
+
+/// Strict env-reference grammar. `^\$\{[A-Z_][A-Z0-9_]*\}$` — exactly
+/// one reference, no surrounding whitespace, no embedded text.
+fn is_valid_env_ref(raw: &str) -> bool {
+    let Some(name) = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}')) else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap_or('\0');
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
