@@ -254,7 +254,24 @@ fn guard_against_nested_keyspace(path: &Path) -> Result<()> {
 }
 
 /// Canonicalize `path`, walking up to the nearest existing ancestor and
-/// re-appending the missing tail. Symlinks resolve to their targets.
+/// re-appending the missing tail. Symlinks resolve to their targets —
+/// including BROKEN symlinks (whose target does not exist), which the
+/// previous Phase 1.5.2 implementation silently passed through (audit
+/// finding #33).
+///
+/// Algorithm:
+///   1. Make the path absolute.
+///   2. Walk parents using `symlink_metadata().is_ok()` rather than
+///      `Path::exists()`. The former returns true for a broken
+///      symlink (the link itself exists; only its target is missing);
+///      the latter returns false because it follows. Without this,
+///      a broken symlink slipped past as "doesn't exist" and the
+///      stripped name was re-appended literally to the canonical
+///      parent, hiding the symlink target from the guard.
+///   3. Once we hit an existing ancestor, canonicalize it.
+///   4. For each tail component, if it's a symlink, read its target
+///      (recursively if needed) and canonicalize the result. If it's
+///      a regular not-yet-existing file, append literally.
 fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -262,11 +279,14 @@ fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::Path
         std::env::current_dir()?.join(path)
     };
 
-    // Walk up to the first existing ancestor.
+    // Walk up to the first ancestor whose entry exists in the
+    // filesystem (regular file/dir OR symlink, broken or not).
+    // symlink_metadata does NOT follow symlinks, so a broken symlink
+    // counts as existing — we want to inspect it.
     let mut existing: &Path = &absolute;
     let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
     loop {
-        if existing.exists() {
+        if existing.symlink_metadata().is_ok() {
             break;
         }
         match existing.parent() {
@@ -280,7 +300,28 @@ fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::Path
         }
     }
 
-    let mut canonical = std::fs::canonicalize(existing)?;
+    // Resolve `existing` itself. If it's a symlink, follow target
+    // chains via canonicalize (which fails on broken symlinks — the
+    // safer behavior here, since a broken symlink target may not
+    // exist YET but will be created by fjall).
+    let mut canonical = match std::fs::canonicalize(existing) {
+        Ok(p) => p,
+        Err(_e) => {
+            // Broken symlink at the leaf of the existing chain.
+            // Read its target manually + canonicalize the target's
+            // PARENT (which must exist for fjall to write there).
+            let target = std::fs::read_link(existing)?;
+            let resolved_target = if target.is_absolute() {
+                target
+            } else {
+                existing.parent().map(|p| p.join(&target)).unwrap_or(target)
+            };
+            // Recurse: the target itself may be a chain of symlinks
+            // or may not exist yet. The `canonicalize_with_nonexistent`
+            // call resolves what it can and returns the rest literally.
+            canonicalize_with_nonexistent(&resolved_target)?
+        }
+    };
     for component in tail.iter().rev() {
         canonical.push(component);
     }
@@ -333,5 +374,43 @@ mod store_guard_tests {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let path = tmp.path().join("subdir-that-does-not-exist-yet");
         guard_against_nested_keyspace(&path).expect("clean path passes");
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn rejects_broken_symlink_into_partitions() {
+        // Reaudit #33: a BROKEN symlink (target does not exist) whose
+        // target path walks through `partitions/` slipped past the
+        // Phase 1.5.2 guard because Path::exists() returns false on
+        // broken symlinks. The fix uses symlink_metadata + manual
+        // read_link to inspect the target.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // Target does NOT exist yet — broken symlink.
+        let broken_target = tmp
+            .path()
+            .join("future-keyspace")
+            .join("partitions")
+            .join("sends");
+        let symlink = tmp.path().join("broken-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&broken_target, &symlink).expect("symlink");
+
+        let result = guard_against_nested_keyspace(&symlink);
+        assert!(
+            result.is_err(),
+            "guard must reject a broken symlink whose target name walks through partitions/"
+        );
+        let err = match result {
+            Ok(()) => unreachable!("asserted is_err above"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("partitions"),
+            "error should reference partitions, got: {msg}"
+        );
     }
 }
