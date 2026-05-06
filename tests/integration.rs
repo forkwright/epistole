@@ -568,6 +568,144 @@ async fn send_javascript_url_in_markdown_is_sanitized() {
     clippy::expect_used,
     reason = "test scaffolding - panic on fail is the desired signal"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario test — splitting hides the linear walk"
+)]
+async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_token() {
+    // Reaudit finding #23: re-subscribe path used to flip Unsubscribed
+    // back to Pending, re-enabling a captured 24h confirm URL. Patch
+    // refuses the re-subscribe state transition.
+    use secrecy::ExposeSecret;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let confirm_signed = epistole::token::sign(
+        &epistole::token::Token::new(
+            epistole::token::TokenKind::Confirm,
+            "user@example.com".to_owned(),
+            now + 3600,
+        ),
+        cfg.token_secret.expose_secret().as_bytes(),
+    )
+    .expect("sign");
+    let unsub_signed = epistole::token::sign(
+        &epistole::token::Token::new(
+            epistole::token::TokenKind::Unsubscribe,
+            "user@example.com".to_owned(),
+            now + 3600,
+        ),
+        cfg.token_secret.expose_secret().as_bytes(),
+    )
+    .expect("sign");
+
+    // 1. POST /subscribe
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", "203.0.113.60")
+                .body(Body::from("email=user%40example.com"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 2. Confirm (Pending → Active)
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/confirm?token={confirm_signed}"))
+                .header("x-forwarded-for", "203.0.113.60")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 3. Unsubscribe (Active → Unsubscribed)
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/unsubscribe?token={unsub_signed}"))
+                .header("x-forwarded-for", "203.0.113.60")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    // 4. Re-subscribe to the same address. With the patch this leaves
+    //    state Unsubscribed (no flip back to Pending).
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", "203.0.113.60")
+                .body(Body::from("email=user%40example.com"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    let sub_after_resub = store
+        .subscriber_get("user@example.com")
+        .expect("read")
+        .expect("subscriber");
+    assert!(
+        matches!(
+            sub_after_resub.state,
+            epistole::store::SubscriberState::Unsubscribed
+        ),
+        "re-subscribe must NOT flip Unsubscribed → Pending (was {:?})",
+        sub_after_resub.state
+    );
+
+    // 5. Replay the original confirm URL. State stays Unsubscribed
+    //    (Phase 1.5 confirm-handler fix already enforces this).
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/confirm?token={confirm_signed}"))
+                .header("x-forwarded-for", "203.0.113.60")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+
+    let sub_final = store
+        .subscriber_get("user@example.com")
+        .expect("read")
+        .expect("subscriber");
+    assert!(
+        matches!(
+            sub_final.state,
+            epistole::store::SubscriberState::Unsubscribed
+        ),
+        "captured confirm URL must NOT reactivate after Phase 1.5.1 fix (was {:?})",
+        sub_final.state
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 async fn send_unauth_does_not_parse_body() {
     // Audit finding #19: unauthenticated /send must not pay JSON-parse
     // cost. We verify by sending a body that WOULD fail JSON parsing

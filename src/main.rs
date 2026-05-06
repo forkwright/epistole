@@ -51,9 +51,18 @@ async fn main() -> Result<()> {
             source: e,
         })?;
 
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| Error::Serve { source: e })?;
+    // `into_make_service_with_connect_info::<SocketAddr>` injects the
+    // peer address into request extensions as `ConnectInfo<SocketAddr>`.
+    // Without this, `TrustedProxyExtractor`'s fallback path (taken when
+    // X-Forwarded-For is missing — direct loopback hits, smoke tests,
+    // anything bypassing NPM) returns `UnableToExtractKey`, which the
+    // governor layer surfaces as a 500. Reaudit finding #25.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|e| Error::Serve { source: e })?;
 
     Ok(())
 }

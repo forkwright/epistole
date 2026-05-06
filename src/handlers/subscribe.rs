@@ -67,13 +67,37 @@ pub(crate) async fn post(
 
     let now = OffsetDateTime::now_utc();
     let existing = state.store.subscriber_get(&email_norm)?;
+
+    // Reaudit finding #23: subscribe handler MUST NOT flip an
+    // Unsubscribed subscriber back to Pending. The previous code did,
+    // re-enabling any captured confirm URL within its 24h TTL — a
+    // two-step bypass of the #7/#18 fix in confirm.rs. Once a visitor
+    // has explicitly opted out, only the operator (or a future
+    // out-of-band re-consent flow) can bring them back.
+    //
+    // We respond with the same "pending" page shape regardless, so
+    // an attacker probing membership cannot distinguish "already
+    // unsubscribed" from "newly subscribed."
+    //
+    // Reaudit finding #26: the Active and Unsubscribed branches both
+    // do less work than the Pending/None branches (no token mint, no
+    // fjall write), creating a timing oracle. We equalize by performing
+    // a same-shape token mint + a NO-OP fjall write on the
+    // short-circuit branches before returning the pending page.
     let subscriber = match existing {
         Some(s) if s.state == SubscriberState::Active => {
-            // Already subscribed - show pending page anyway (no leak about
-            // membership state).
+            // Equalize: mint a token (discarded) and re-put the
+            // subscriber unchanged. Same CPU + I/O as the pending path.
+            timing_equalize(&state, &email_norm, &s, now)?;
+            return Ok(templates::pending(&state.config.brand.name, &email_norm).into_response());
+        }
+        Some(s) if s.state == SubscriberState::Unsubscribed => {
+            // Same equalization. Subscriber stays Unsubscribed.
+            timing_equalize(&state, &email_norm, &s, now)?;
             return Ok(templates::pending(&state.config.brand.name, &email_norm).into_response());
         }
         Some(mut s) => {
+            // Pending refresh — extends the window and resets timestamps.
             s.state = SubscriberState::Pending;
             s.created_at = now;
             s.confirmed_at = None;
@@ -106,12 +130,49 @@ pub(crate) async fn post(
     // and journal logs may persist for weeks. A hash digest of the
     // email gives the operator just enough to correlate without
     // leaking the address.
+    // Reaudit finding #28: hash the email with the token_secret as
+    // an HMAC key so a journal exfil can't be rainbow-matched against
+    // a known target list. The 16-hex truncation gives the operator
+    // enough entropy to correlate (64 bits — collision-free at any
+    // realistic subscriber count) without leaking the address.
     let email_hash = {
-        use sha2::{Digest, Sha256};
-        let h = Sha256::digest(email_norm.as_bytes());
-        format!("{h:x}")[..16].to_owned()
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(state.config.token_secret.expose_secret().as_bytes())
+                .map_err(|e| Error::Config {
+                    reason: format!("HMAC key for log-hash: {e}"),
+                })?;
+        mac.update(email_norm.as_bytes());
+        let digest = mac.finalize().into_bytes();
+        format!("{digest:x}")[..16].to_owned()
     };
-    tracing::info!(email_sha256_short = %email_hash, "confirm link minted (phase 0: operator mints URL out-of-band)");
+    tracing::info!(email_hmac_short = %email_hash, "confirm link minted (phase 0: operator mints URL out-of-band)");
 
     Ok(templates::pending(&state.config.brand.name, &email_norm).into_response())
+}
+
+/// Do the same CPU + I/O work the Pending path does, on the
+/// short-circuit (Active / Unsubscribed) branches — defends against
+/// timing-oracle membership disclosure (reaudit finding #26).
+///
+/// Mints a Confirm token over the same secret (discarded), and re-puts
+/// the subscriber record unchanged. The fjall write is idempotent
+/// when the value is byte-identical, so the LSM-tree compaction sees
+/// no growth from this call.
+fn timing_equalize(
+    state: &AppState,
+    email_norm: &str,
+    subscriber: &Subscriber,
+    now: OffsetDateTime,
+) -> Result<()> {
+    let exp_unix = now.unix_timestamp() + CONFIRM_TTL_SECS;
+    let token = crate::token::Token::new(
+        crate::token::TokenKind::Confirm,
+        email_norm.to_owned(),
+        exp_unix,
+    );
+    let _ = crate::token::sign(&token, state.config.token_secret.expose_secret().as_bytes())?;
+    state.store.subscriber_put(subscriber)?;
+    Ok(())
 }

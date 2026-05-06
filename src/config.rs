@@ -124,6 +124,14 @@ impl Config {
         cfg.smtp.password = resolve_secret_env(&cfg.smtp.password, "smtp.password")?;
         validate_secret_strength(&cfg.token_secret, "token_secret", 32)?;
         validate_secret_strength(&cfg.send_auth_token, "send_auth_token", 24)?;
+        // Reaudit finding #27: smtp.password skipped strength check.
+        // The example config's literal `REPLACE_WITH_POSTMARK_TOKEN`
+        // would have slipped past boot. Validate it the same way as
+        // the other two secrets. Length floor is lower (16) because
+        // SMTP relay tokens are typically shorter than fleet-minted
+        // HMAC keys; the blocked-pattern check is the load-bearing
+        // gate against operator copy-paste mistakes.
+        validate_secret_strength(&cfg.smtp.password, "smtp.password", 16)?;
         Ok(cfg)
     }
 }
