@@ -407,6 +407,34 @@ If anything breaks during cutover:
 2. Buttondown stays the active newsletter provider (don't disable the Buttondown account for ~30 days post-cutover).
 3. epistole continues collecting any subscribers that hit it; merge their list later.
 
+## token_secret rotation
+
+`token_secret` signs the confirm + unsubscribe links emailed to subscribers. Rotate as a periodic hygiene measure (annually) or immediately on suspected leak. Rotation invalidates all outstanding pending-confirm + active-unsubscribe tokens; **active subscribers stay subscribed** (Active state is in the fjall keyspace, not in tokens), but pending subscribers must re-subscribe and active subscribers wanting to unsubscribe must request a fresh link.
+
+```bash
+# 1. Generate a new 32-byte secret (matches Step 4's generation):
+NEW_TOKEN_SECRET=$(head -c 32 /dev/urandom | base64 -w 0)
+
+# 2. Update /etc/epistole/epistole.toml (file is 0640 root:epistole):
+sudoedit /etc/epistole/epistole.toml
+# Replace the token_secret = "..." line.
+
+# 3. Restart the service to pick up the new secret:
+sudo systemctl restart epistole.service
+
+# 4. Verify the unit is healthy:
+systemctl status epistole.service
+journalctl -u epistole.service -n 50 --no-pager
+```
+
+Operational notes:
+
+- **Pending-confirm impact**: any subscriber who clicked Subscribe before the rotation but hasn't clicked their confirm link yet will get a "token invalid" error on their stale link. The fix on their side is identical to a normal sign-up: re-subscribe to receive a fresh confirm link.
+- **Active-unsubscribe impact**: pre-rotation unsubscribe links emailed in past Sends become invalid. Subscribers needing to unsubscribe land on a "token invalid" page and must request a fresh unsubscribe link (Phase 2 wiring will surface this via a "request new link" form; until then, they'd have to email the operator).
+- **Active subscribers are unaffected**: their Active state is keyed on `email_hash` in the fjall `subscribers` partition; no token re-issue needed.
+
+The rotate-and-restart approach assumes pending-list size is small (typical for a fleet newsletter at this scale; per the Phase 0 design's "tiny pending list" assumption). If subscriber load grows enough that losing the pending bucket on every rotation becomes operationally painful, a future change can add a `token_secret_previous` config field that `verify()` falls back to during a rotation window. The original analysis in forkwright/epistole#3 concluded the maintenance cost of a two-secret window outweighed its benefit at Phase 0 scale; revisit that conclusion when subscriber-loss-on-rotation surfaces as real friction.
+
 ## What's NOT in this runbook
 
 - **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#1. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days.
