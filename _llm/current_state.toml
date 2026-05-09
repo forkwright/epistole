@@ -1,0 +1,32 @@
+[meta]
+name = "epistole"
+repo = "forkwright/epistole"
+generated = false
+source_docs = [
+  "README.md",
+  "DEPLOY.md",
+  "src/lib.rs",
+]
+
+[state]
+summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows and deployment runbook in place."
+current_phase = "Phase 0 substrate scaffold with public endpoints and operator send path under active implementation."
+updated = "2026-05-08"
+
+[[recent]]
+date = "2026-05-06"
+item = "Repo exists on the forge as a private fleet newsletter service."
+
+[[recent]]
+date = "2026-05-08"
+item = "Public routes and integration tests cover health, subscribe, confirm, unsubscribe, archive, rate limits, and disclosure-safe token failures."
+
+[[open_threads]]
+name = "SMTP integration"
+issue = 1
+status = "lettre integration and delivery ledger walking remain tracked as the next service milestone."
+
+[[open_threads]]
+name = "Ardent cutover"
+issue = 0
+status = "Contact-page form replacement waits for deployed epistole service."

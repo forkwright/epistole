@@ -1,0 +1,26 @@
+# Epistole
+
+> Sovereign Rust newsletter service for fleet web properties.
+
+Epistole replaces hosted newsletter forms with an axum service that owns subscribe, confirm, unsubscribe, archive, and operator send flows. Storage is embedded fjall; rendering uses maud; delivery goes through a configured SMTP relay.
+
+## Binary
+
+`epistole` - service binary built from `src/main.rs`. It loads config, opens the fjall store, and serves the HTTP routes.
+
+## Architecture
+
+Structured LLM corpus:
+- [_llm/architecture.toml](_llm/architecture.toml): service layers and interfaces
+- [_llm/current_state.toml](_llm/current_state.toml): phase, recent work, and active threads
+- [_llm/decisions.toml](_llm/decisions.toml): accepted service decisions
+- [_llm/glossary.toml](_llm/glossary.toml): newsletter vocabulary
+- [_llm/apis.toml](_llm/apis.toml): CLI and HTTP routes
+
+## Agent Entry Points
+
+- [README.md](README.md): service purpose and phase plan
+- [DEPLOY.md](DEPLOY.md): deployment runbook
+- [src/lib.rs](src/lib.rs): router, middleware, and route registration
+- [src/store.rs](src/store.rs): fjall persistence
+- [src/token.rs](src/token.rs): confirm and unsubscribe token contract

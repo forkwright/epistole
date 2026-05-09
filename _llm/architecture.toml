@@ -1,0 +1,36 @@
+[meta]
+name = "epistole"
+repo = "forkwright/epistole"
+generated = false
+source_docs = [
+  "README.md",
+  "DEPLOY.md",
+  "src/lib.rs",
+]
+
+[architecture]
+summary = "Sovereign Rust newsletter service for fleet web properties, with public subscribe flows, operator send flow, fjall storage, maud templates, and SMTP relay delivery."
+layers = [
+  "config",
+  "http",
+  "templates",
+  "tokens",
+  "storage",
+  "delivery",
+  "deploy",
+]
+
+[[architecture.crates]]
+name = "epistole"
+path = "src"
+role = "Single-crate axum service with config, handlers, templates, token signing, fjall storage, and send workflow."
+
+[[interfaces]]
+name = "epistole"
+kind = "cli"
+path = "src/main.rs"
+
+[[interfaces]]
+name = "newsletter HTTP"
+kind = "http"
+path = "src/lib.rs"

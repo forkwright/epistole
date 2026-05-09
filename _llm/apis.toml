@@ -1,0 +1,46 @@
+[meta]
+name = "epistole"
+repo = "forkwright/epistole"
+generated = false
+source_docs = [
+  "README.md",
+  "src/lib.rs",
+  "src/main.rs",
+]
+
+[apis]
+summary = "Epistole exposes one service binary and a small HTTP surface for newsletter subscription and sends."
+
+[[cli_commands]]
+name = "epistole"
+purpose = "Run the newsletter HTTP service from the configured bind address."
+
+[[http_routes]]
+method = "GET"
+path = "/healthz"
+purpose = "Health check."
+
+[[http_routes]]
+method = "POST"
+path = "/subscribe"
+purpose = "Create or update a Pending subscriber and send confirmation."
+
+[[http_routes]]
+method = "GET"
+path = "/confirm"
+purpose = "Verify a confirm token and activate a subscriber."
+
+[[http_routes]]
+method = "GET"
+path = "/unsubscribe"
+purpose = "Verify an unsubscribe token and mark a subscriber unsubscribed."
+
+[[http_routes]]
+method = "GET"
+path = "/archive"
+purpose = "Render public newsletter archive."
+
+[[http_routes]]
+method = "POST"
+path = "/send"
+purpose = "Auth-gated operator send endpoint."

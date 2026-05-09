@@ -1,0 +1,37 @@
+[meta]
+name = "epistole"
+repo = "forkwright/epistole"
+generated = false
+source_docs = [
+  "README.md",
+  "src/store.rs",
+  "src/token.rs",
+]
+
+[glossary]
+description = "Domain vocabulary for the epistole newsletter service."
+
+[[terms]]
+term = "epistole"
+definition = "Letter sent; the fleet newsletter service."
+canonical = true
+
+[[terms]]
+term = "subscriber"
+definition = "Email address record with Pending, Active, or Unsubscribed state."
+canonical = true
+
+[[terms]]
+term = "confirm token"
+definition = "Signed link token that flips a Pending subscriber to Active."
+canonical = true
+
+[[terms]]
+term = "unsubscribe token"
+definition = "Signed link token that flips an Active subscriber to Unsubscribed."
+canonical = true
+
+[[terms]]
+term = "send"
+definition = "Operator-authored newsletter issue persisted before delivery."
+canonical = true

@@ -1,0 +1,45 @@
+[meta]
+name = "epistole"
+repo = "forkwright/epistole"
+generated = false
+source_docs = [
+  "README.md",
+  "DEPLOY.md",
+  "src/lib.rs",
+  "src/token.rs",
+]
+
+[decisions]
+summary = "Core decisions for the epistole newsletter service."
+
+[[decision]]
+id = "D-replace-buttondown"
+title = "Self-host newsletter instead of Buttondown"
+status = "accepted"
+context = "Fleet web properties need a sovereign newsletter surface."
+decision = "Build epistole as a standalone Rust service for subscribe, confirm, unsubscribe, archive, and operator sends."
+consequences = "Ardent and future typikon consumers can use the same self-hosted newsletter primitive."
+
+[[decision]]
+id = "D-fjall-storage"
+title = "Use fjall for subscriber and send ledgers"
+status = "accepted"
+context = "Subscriber state, delivery ledger, and send history need embedded durable storage."
+decision = "Use fjall keyspaces/partitions instead of an external database."
+consequences = "Deployment stays one service plus a data directory."
+
+[[decision]]
+id = "D-token-links"
+title = "Use signed time-limited confirm and unsubscribe tokens"
+status = "accepted"
+context = "Email flows need one-click confirm and unsubscribe without login accounts."
+decision = "Mint HMAC-signed tokens scoped by kind and email."
+consequences = "Confirm and unsubscribe links are stateless to verify but still bound to stored subscriber state."
+
+[[decision]]
+id = "D-smtp-relay"
+title = "Deliver through SMTP relay"
+status = "accepted"
+context = "DKIM/SPF/DMARC deliverability belongs to a mail relay, not the app host."
+decision = "Use lettre against Postmark or Mailgun."
+consequences = "Epistole owns subscriber workflow while relay infrastructure handles outbound reputation."
