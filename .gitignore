@@ -6,3 +6,4 @@ target/
 .env.local
 /data/
 .codex-last-message.txt
+*.bak
