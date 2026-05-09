@@ -4,14 +4,13 @@ version = "0.0.1"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/forkwright/epistole"
-rust-version = "1.85"
+rust-version = "1.94"
 description = "Sovereign newsletter service for fleet web properties - axum + fjall + maud + lettre."
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "limit", "cors", "timeout"] }
 
 # Persistence (single-writer per keyspace; matches fleet pattern)
 fjall = "2"
@@ -67,6 +66,10 @@ email_address = "0.2"
 # Config
 toml = "0.9"
 clap = { version = "4", features = ["derive"] }
+
+[dependencies.tower-http]
+version = "0.6"
+features = ["trace", "limit", "cors", "timeout"]
 
 [dependencies.lettre]
 version = "0.11"
