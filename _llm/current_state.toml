@@ -10,21 +10,35 @@ source_docs = [
 
 [state]
 summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows and deployment runbook in place."
-current_phase = "Phase 0 substrate scaffold with public endpoints and operator send path under active implementation."
-updated = "2026-05-08"
+current_phase = "Phase 1.5 security remediation complete; Phase 2 SMTP relay + archive walking pending."
+updated = "2026-05-21"
 
 [[recent]]
 date = "2026-05-06"
-item = "Repo exists on the forge as a private fleet newsletter service."
+item = "Phase 1 security hardening landed; Phase 1.5/1.5.1/1.5.2 remediation closed 22 audit findings."
 
 [[recent]]
-date = "2026-05-08"
-item = "Public routes and integration tests cover health, subscribe, confirm, unsubscribe, archive, rate limits, and disclosure-safe token failures."
+date = "2026-05-09"
+item = "token_secret rotation runbook + lint debt cleared + rust-toolchain bumped to stable."
+
+[[recent]]
+date = "2026-05-21"
+item = "CLAUDE.md recovered from menos snapshot."
 
 [[open_threads]]
 name = "SMTP integration"
-issue = 1
-status = "lettre integration and delivery ledger walking remain tracked as the next service milestone."
+issue = 3
+status = "lettre integration in subscribe + send remains tracked as the next service milestone."
+
+[[open_threads]]
+name = "Archive endpoint"
+issue = 4
+status = "Phase 2 archive endpoint to walk sends partition (currently stub)."
+
+[[open_threads]]
+name = "Subscriber lifecycle bounds"
+issue = 5
+status = "Bounded lifecycle for pending subscribers — security followup."
 
 [[open_threads]]
 name = "Ardent cutover"
