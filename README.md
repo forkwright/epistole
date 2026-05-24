@@ -35,7 +35,7 @@ Phase 0 - substrate scaffold. Code does not yet build a working server. Subseque
 3. Operator endpoint (`/send`) + markdown rendering
 4. SMTP relay integration (Postmark/Mailgun adapter) - tracked at issue #1
 5. Subscriber-import tool (`bin/epistole-import` for migrating from Buttondown)
-6. Systemd unit + Caddy reverse-proxy snippet for aletheia deploy
+6. Systemd unit + reverse-proxy snippet for aletheia deploy (see DEPLOY.md for NPM topology)
 7. Cutover: replace Buttondown form on ardent's contact page
 
 See `CLAUDE.md` for boundaries and conventions.
