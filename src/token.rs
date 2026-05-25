@@ -33,7 +33,7 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TokenKind {
-    /// Confirm a Pending subscriber - flips state to Active.
+    /// Confirm a mailbox - creates or confirms an Active subscriber.
     Confirm,
     /// Unsubscribe an Active subscriber - flips state to Unsubscribed.
     Unsubscribe,

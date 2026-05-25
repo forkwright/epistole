@@ -1,7 +1,8 @@
 //! Storage layer. fjall keyspace with three partitions:
 //!
 //! - `subscribers` - keyed by lowercased email; value is a JSON-encoded
-//!   [`Subscriber`] record.
+//!   [`Subscriber`] record. New confirms create `Active` rows directly;
+//!   `Pending` is retained only for legacy pre-stateless-token rows.
 //! - `sends` - keyed by send id (ULID-ish lexicographic timestamp);
 //!   value is a JSON-encoded [`Send`] record (subject + rendered HTML +
 //!   sent timestamp).
@@ -21,8 +22,8 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 
 /// Subscriber lifecycle state. Tokens reference one of these implicitly
-/// via their `kind` field - a `confirm` token is only valid against a
-/// `Pending` subscriber, an `unsubscribe` token only against `Active`.
+/// via their `kind` field - a `confirm` token creates or confirms an
+/// `Active` subscriber, an `unsubscribe` token only applies to `Active`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -233,6 +234,47 @@ impl Store {
                 reason: format!("subscriber_put {}: {e}", subscriber.email),
             })
     }
+
+    /// Purge legacy `Pending` subscribers whose `created_at` is older than
+    /// `max_age`.
+    ///
+    /// New `/subscribe` requests no longer create pending rows, but existing
+    /// deployments may have stale pre-fix rows. This one-shot cleanup bounds
+    /// that legacy state without touching `Active` or `Unsubscribed` rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on fjall read/write failures or JSON decode
+    /// failures.
+    pub fn purge_expired_pending(
+        &self,
+        now: OffsetDateTime,
+        max_age: time::Duration,
+    ) -> Result<usize> {
+        let mut expired = Vec::new();
+        for kv in self.subscribers.iter() {
+            let (key, value) = kv.map_err(|e| Error::Store {
+                reason: format!("subscribers iter: {e}"),
+            })?;
+            let subscriber: Subscriber =
+                serde_json::from_slice(&value).map_err(|e| Error::Store {
+                    reason: format!("subscriber decode during pending purge: {e}"),
+                })?;
+            if subscriber.state == SubscriberState::Pending
+                && subscriber.created_at + max_age <= now
+            {
+                expired.push(key.to_vec());
+            }
+        }
+
+        let deleted = expired.len();
+        for key in expired {
+            self.subscribers.remove(key).map_err(|e| Error::Store {
+                reason: format!("pending purge remove: {e}"),
+            })?;
+        }
+        Ok(deleted)
+    }
 }
 
 /// Refuse to open a keyspace whose path resolves INSIDE another
@@ -349,6 +391,73 @@ fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::Path
         canonical.push(component);
     }
     Ok(canonical)
+}
+
+#[cfg(test)]
+mod pending_purge_tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn expired_legacy_pending_rows_are_purged_without_touching_subscribers() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+        let now = OffsetDateTime::now_utc();
+        let old = now - time::Duration::hours(25);
+        let fresh = now - time::Duration::hours(1);
+
+        for subscriber in [
+            Subscriber {
+                email: "old-pending@example.com".to_owned(),
+                state: SubscriberState::Pending,
+                created_at: old,
+                confirmed_at: None,
+                unsubscribed_at: None,
+            },
+            Subscriber {
+                email: "fresh-pending@example.com".to_owned(),
+                state: SubscriberState::Pending,
+                created_at: fresh,
+                confirmed_at: None,
+                unsubscribed_at: None,
+            },
+            Subscriber {
+                email: "active@example.com".to_owned(),
+                state: SubscriberState::Active,
+                created_at: old,
+                confirmed_at: Some(old),
+                unsubscribed_at: None,
+            },
+        ] {
+            store.subscriber_put(&subscriber).expect("put");
+        }
+
+        let purged = store
+            .purge_expired_pending(now, time::Duration::hours(24))
+            .expect("purge");
+        assert_eq!(purged, 1);
+        assert!(
+            store
+                .subscriber_get("old-pending@example.com")
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            store
+                .subscriber_get("fresh-pending@example.com")
+                .expect("read")
+                .is_some()
+        );
+        assert!(
+            store
+                .subscriber_get("active@example.com")
+                .expect("read")
+                .is_some()
+        );
+    }
 }
 
 #[cfg(test)]

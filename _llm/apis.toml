@@ -26,7 +26,7 @@ purpose = "Health check."
 [[http_routes]]
 method = "POST"
 path = "/subscribe"
-purpose = "Create or update a Pending subscriber and send confirmation."
+purpose = "Validate a subscription request and send a stateless confirmation."
 
 [[http_routes]]
 method = "GET"

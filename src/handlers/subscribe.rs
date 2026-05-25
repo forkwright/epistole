@@ -1,5 +1,5 @@
-//! `POST /subscribe` - accept an email; create or refresh a Pending
-//! subscriber; mint a confirm token; mail the confirm link.
+//! `POST /subscribe` - accept an email and mint a stateless confirm token
+//! without durably persisting unproven mailbox ownership.
 //!
 //! Idempotent at the data level: re-submitting an already-active email
 //! short-circuits to a "you're already subscribed" page (treating it as
@@ -13,7 +13,6 @@ use time::OffsetDateTime;
 
 use crate::AppState;
 use crate::error::{Error, Result};
-use crate::store::{Subscriber, SubscriberState};
 use crate::templates;
 
 /// Form body for the subscribe endpoint.
@@ -46,9 +45,8 @@ fn strict_email_options() -> Options {
 ///
 /// # Errors
 ///
-/// Returns [`Error::BadRequest`] on a malformed or oversized email,
-/// [`Error::Store`] on a fjall failure, [`Error::Smtp`] when the relay
-/// refuses the confirmation message.
+/// Returns [`Error::BadRequest`] on a malformed or oversized email, or
+/// [`Error::Config`] when token signing cannot be initialized.
 pub(crate) async fn post(
     State(state): State<AppState>,
     Form(body): Form<Body>,
@@ -65,62 +63,24 @@ pub(crate) async fn post(
         });
     }
 
-    let now = OffsetDateTime::now_utc();
-    let existing = state.store.subscriber_get(&email_norm)?;
-
     // Reaudit finding #23: subscribe handler MUST NOT flip an
     // Unsubscribed subscriber back to Pending. The previous code did,
     // re-enabling any captured confirm URL within its 24h TTL — a
     // two-step bypass of the #7/#18 fix in confirm.rs. Once a visitor
-    // has explicitly opted out, only the operator (or a future
-    // out-of-band re-consent flow) can bring them back.
+    // has explicitly opted out, confirm.rs still refuses to reactivate
+    // them from a stale or newly minted confirm token.
     //
     // We respond with the same "pending" page shape regardless, so
     // an attacker probing membership cannot distinguish "already
     // unsubscribed" from "newly subscribed."
     //
-    // Reaudit finding #26: the Active and Unsubscribed branches both
-    // do less work than the Pending/None branches (no token mint, no
-    // fjall write), creating a timing oracle. We equalize by performing
-    // a same-shape token mint + a NO-OP fjall write on the
-    // short-circuit branches before returning the pending page.
-    let subscriber = match existing {
-        Some(s) if s.state == SubscriberState::Active => {
-            // Equalize: mint a token (discarded) and re-put the
-            // subscriber unchanged. Same CPU + I/O as the pending path.
-            timing_equalize(&state, &email_norm, &s, now)?;
-            return Ok(templates::pending(&state.config.brand.name, &email_norm).into_response());
-        }
-        Some(s) if s.state == SubscriberState::Unsubscribed => {
-            // Same equalization. Subscriber stays Unsubscribed.
-            timing_equalize(&state, &email_norm, &s, now)?;
-            return Ok(templates::pending(&state.config.brand.name, &email_norm).into_response());
-        }
-        Some(mut s) => {
-            // Pending refresh — extends the window and resets timestamps.
-            s.state = SubscriberState::Pending;
-            s.created_at = now;
-            s.confirmed_at = None;
-            s.unsubscribed_at = None;
-            s
-        }
-        None => Subscriber {
-            email: email_norm.clone(),
-            state: SubscriberState::Pending,
-            created_at: now,
-            confirmed_at: None,
-            unsubscribed_at: None,
-        },
-    };
-    state.store.subscriber_put(&subscriber)?;
+    // Reaudit finding #26: short-circuiting Active/Unsubscribed used to
+    // do less work than new/Pending paths. Confirm tokens are stateless
+    // now, so every valid submit does the same token-signing work while
+    // avoiding a fjall write until /confirm proves mailbox ownership.
+    let now = OffsetDateTime::now_utc();
 
-    let exp_unix = now.unix_timestamp() + CONFIRM_TTL_SECS;
-    let token = crate::token::Token::new(
-        crate::token::TokenKind::Confirm,
-        email_norm.clone(),
-        exp_unix,
-    );
-    let _signed = crate::token::sign(&token, state.config.token_secret.expose_secret().as_bytes())?;
+    let _signed = mint_confirm_token(&state, &email_norm, now)?;
 
     // Phase 2 (forkwright/epistole#1) wires lettre — until then, the
     // operator pulls the confirm URL by signing it themselves with
@@ -152,27 +112,19 @@ pub(crate) async fn post(
     Ok(templates::pending(&state.config.brand.name, &email_norm).into_response())
 }
 
-/// Do the same CPU + I/O work the Pending path does, on the
-/// short-circuit (Active / Unsubscribed) branches — defends against
-/// timing-oracle membership disclosure (reaudit finding #26).
+/// Do the same CPU work for each valid subscribe path by minting the
+/// stateless confirm token. The caller owns whether that token should be
+/// mailed; Phase 0 only logs the HMAC'd address for operator correlation.
 ///
-/// Mints a Confirm token over the same secret (discarded), and re-puts
-/// the subscriber record unchanged. The fjall write is idempotent
-/// when the value is byte-identical, so the LSM-tree compaction sees
-/// no growth from this call.
-fn timing_equalize(
-    state: &AppState,
-    email_norm: &str,
-    subscriber: &Subscriber,
-    now: OffsetDateTime,
-) -> Result<()> {
+/// No subscriber row is written here. That is the security boundary for
+/// forkwright/epistole#5: unconfirmed addresses never become durable
+/// fjall state.
+fn mint_confirm_token(state: &AppState, email_norm: &str, now: OffsetDateTime) -> Result<String> {
     let exp_unix = now.unix_timestamp() + CONFIRM_TTL_SECS;
     let token = crate::token::Token::new(
         crate::token::TokenKind::Confirm,
         email_norm.to_owned(),
         exp_unix,
     );
-    let _ = crate::token::sign(&token, state.config.token_secret.expose_secret().as_bytes())?;
-    state.store.subscriber_put(subscriber)?;
-    Ok(())
+    crate::token::sign(&token, state.config.token_secret.expose_secret().as_bytes())
 }

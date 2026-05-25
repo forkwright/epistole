@@ -1,5 +1,5 @@
-//! `GET /confirm?token=...` - verify the token, flip the subscriber to
-//! Active, render a success page.
+//! `GET /confirm?token=...` - verify the stateless token, create or flip
+//! the subscriber to Active, render a success page.
 
 use axum::{
     extract::{Query, State},
@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 use crate::AppState;
 use crate::error::Result;
-use crate::store::SubscriberState;
+use crate::store::{Subscriber, SubscriberState};
 use crate::templates;
 use crate::token::{TokenKind, verify};
 
@@ -36,13 +36,12 @@ impl std::fmt::Debug for Params {
 ///   - bad signature
 ///   - expired token
 ///   - wrong kind (unsubscribe-token presented at /confirm)
-///   - subscriber not found in store
 ///   - subscriber state is Unsubscribed (re-confirm refused — protects
 ///     CAN-SPAM/GDPR; once you opt out, a stale link can't bring you back)
 ///
-/// This makes the response a membership-non-disclosure oracle: an
-/// attacker holding a captured token can't learn whether the email
-/// is still in the list.
+/// Confirm tokens are stateless: a valid signed token proves the operator
+/// minted a confirmation link, so a missing subscriber row is not an error.
+/// The handler creates the durable `Active` row only after this proof step.
 ///
 /// # Errors
 ///
@@ -64,31 +63,40 @@ pub(crate) async fn get(
         _ => return Ok(invalid()),
     };
 
-    let Some(mut subscriber) = state.store.subscriber_get(&token.email)? else {
-        // Subscriber row missing — token references something that
-        // doesn't exist. Emit the same shape as a bad token; never
-        // 404, which would leak existence.
-        return Ok(invalid());
-    };
+    let subscriber = state.store.subscriber_get(&token.email)?;
 
-    match subscriber.state {
-        SubscriberState::Unsubscribed => {
+    match subscriber {
+        Some(subscriber) if subscriber.state == SubscriberState::Unsubscribed => {
             // Stale confirm token cannot reactivate an unsubscribed
             // address. This is a hard refusal — once a visitor explicitly
             // opted out, only a fresh subscribe (which mints a new
             // token) can bring them back.
             Ok(invalid())
         }
-        SubscriberState::Pending => {
+        Some(mut subscriber) if subscriber.state == SubscriberState::Pending => {
+            // Legacy pre-#5 pending rows still confirm cleanly, but the
+            // subscribe path no longer creates or refreshes them.
             subscriber.state = SubscriberState::Active;
             subscriber.confirmed_at = Some(now);
             state.store.subscriber_put(&subscriber)?;
             Ok(templates::confirmed(&state.config.brand.name).into_response())
         }
-        SubscriberState::Active => {
+        Some(subscriber) if subscriber.state == SubscriberState::Active => {
             // Idempotent confirm — already active. Return the success
             // page so re-clicking the email link doesn't surprise the
             // visitor.
+            Ok(templates::confirmed(&state.config.brand.name).into_response())
+        }
+        Some(_) => Ok(invalid()),
+        None => {
+            let subscriber = Subscriber {
+                email: token.email,
+                state: SubscriberState::Active,
+                created_at: now,
+                confirmed_at: Some(now),
+                unsubscribed_at: None,
+            };
+            state.store.subscriber_put(&subscriber)?;
             Ok(templates::confirmed(&state.config.brand.name).into_response())
         }
     }

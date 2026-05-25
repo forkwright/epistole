@@ -23,7 +23,7 @@ canonical = true
 
 [[terms]]
 term = "confirm token"
-definition = "Signed link token that flips a Pending subscriber to Active."
+definition = "Signed link token that creates or confirms an Active subscriber."
 canonical = true
 
 [[terms]]
