@@ -192,6 +192,29 @@ impl Store {
         }))
     }
 
+    /// Look up one send by its stable send id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall read failure or JSON decode
+    /// failure.
+    pub fn send_get(&self, send_id: &str) -> Result<Option<Send>> {
+        let raw = self
+            .sends
+            .get(send_id.as_bytes())
+            .map_err(|e| Error::Store {
+                reason: format!("send_get {send_id}: {e}"),
+            })?;
+        match raw {
+            None => Ok(None),
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| Error::Store {
+                    reason: format!("decode send {send_id}: {e}"),
+                }),
+        }
+    }
+
     /// Insert or replace a subscriber record.
     ///
     /// # Errors
