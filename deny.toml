@@ -6,9 +6,15 @@ targets = []
 all-features = false
 
 [advisories]
+# WHY: keep in sync with .cargo/audit.toml's [advisories.ignore] array.
+# cargo-audit does not read deny.toml, so any ignore lives in both files.
 yanked = "deny"
+ignore = []
 
 [licenses]
+# WHY: epistole is AGPL-3.0-or-later (declared in Cargo.toml). Allow list
+# covers permissive licenses used by transitive deps; revisit on any
+# license addition flagged by cargo-deny.
 allow = [
     "MIT",
     "Apache-2.0",
