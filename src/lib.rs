@@ -147,6 +147,7 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
         .route("/confirm", get(handlers::confirm::get))
         .route("/unsubscribe", get(handlers::unsubscribe::get))
         .route("/archive", get(handlers::archive::get))
+        .route("/archive/{send_id}", get(handlers::archive::detail))
         .layer(GovernorLayer::new(governor_conf))
         .layer(DefaultBodyLimit::max(SUBSCRIBE_BODY_LIMIT))
         .layer(RequestBodyLimitLayer::new(SUBSCRIBE_BODY_LIMIT));

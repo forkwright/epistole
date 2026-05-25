@@ -3,7 +3,10 @@
 //! confirmation, not as a full website. Brand styling stays at the
 //! consumer site; epistole's pages link back home.
 
-use maud::{DOCTYPE, Markup, html};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
+use time::OffsetDateTime;
+
+use crate::store::Send;
 
 /// Shared shell - head + body wrapper. `inner` is the page-specific body.
 fn shell(brand: &str, title: &str, inner: &Markup) -> Markup {
@@ -18,6 +21,11 @@ fn shell(brand: &str, title: &str, inner: &Markup) -> Markup {
                     "body{font-family:system-ui,sans-serif;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#1c1917;background:#f7f3e8;line-height:1.6}"
                     "h1{font-weight:500;font-size:1.5rem;margin-bottom:1rem}"
                     "p{margin:1rem 0}"
+                    "ol{padding-left:1.4rem}"
+                    "li{margin:0.75rem 0}"
+                    "time{display:block;color:#57534e;font-size:0.9rem}"
+                    ".send-body{margin-top:2rem}"
+                    ".send-body>*:first-child{margin-top:0}"
                     "a{color:#581523}"
                 }
             }
@@ -67,4 +75,63 @@ pub(crate) fn invalid_token(brand: &str) -> Markup {
         p { "Confirmation and unsubscribe links are time-limited. Try requesting a fresh one from the contact page." }
     };
     shell(brand, "Link expired", &body)
+}
+
+/// Archive index page listing persisted newsletter sends.
+pub(crate) fn archive_index(brand: &str, sends: &[Send]) -> Markup {
+    let body = html! {
+        h1 { "Archive" }
+        @if sends.is_empty() {
+            p { "Past notes from " (brand) " will appear here once the first issue is sent." }
+        } @else {
+            ol {
+                @for send in sends {
+                    li {
+                        a href=(format!("/archive/{}", send.id)) { (send.subject) }
+                        time datetime=(datetime_attr(send.sent_at)) { (date_label(send.sent_at)) }
+                    }
+                }
+            }
+        }
+    };
+    shell(brand, "Archive", &body)
+}
+
+/// Archive detail page for one immutable send.
+pub(crate) fn archive_detail(brand: &str, send: &Send) -> Markup {
+    let body_html = ammonia::clean(&send.body_html);
+    let body = html! {
+        p { a href="/archive" { "Archive" } }
+        article {
+            h1 { (send.subject) }
+            time datetime=(datetime_attr(send.sent_at)) { (date_label(send.sent_at)) }
+            div class="send-body" {
+                (PreEscaped(body_html))
+            }
+        }
+    };
+    shell(brand, &send.subject, &body)
+}
+
+fn date_label(sent_at: OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        sent_at.year(),
+        u8::from(sent_at.month()),
+        sent_at.day(),
+        sent_at.hour(),
+        sent_at.minute()
+    )
+}
+
+fn datetime_attr(sent_at: OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        sent_at.year(),
+        u8::from(sent_at.month()),
+        sent_at.day(),
+        sent_at.hour(),
+        sent_at.minute(),
+        sent_at.second()
+    )
 }

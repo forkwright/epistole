@@ -437,8 +437,8 @@ The rotate-and-restart approach assumes pending-list size is small (typical for 
 
 ## What's NOT in this runbook
 
-- **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#1. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days.
-- **Phase 2 archive page walking** - tracked at forkwright/epistole#2. `/archive` returns a stub today.
+- **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#3. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days.
+- **Archive feed/import polish** - the `/archive` index/detail pages walk the sends ledger; `/archive.xml` and import tooling remain follow-up work.
 - **bin/epistole-import** - tracked separately; Phase 3.
 
 These are all additive; the substrate landed in Phase 0 is sufficient to start collecting subscribers + composing Sends, even before the SMTP wire-up.
