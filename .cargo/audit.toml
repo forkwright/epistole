@@ -1,0 +1,12 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/README.md
+#
+# WHY: Mirrors `deny.toml` `[advisories.ignore]` so that `cargo audit`
+# (run with `--deny unmaintained --deny unsound --deny yanked`) and
+# `cargo deny check advisories` agree on which RUSTSEC IDs are
+# pre-acknowledged. Each suppression must cite the dep chain and the
+# reason no safer alternative is available; revisit at the next MSRV
+# bump or when upstream publishes a fix.
+
+[advisories]
+ignore = []
