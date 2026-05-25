@@ -60,7 +60,7 @@ pub enum Error {
     #[snafu(display("unauthorized"))]
     Unauthorized,
 
-    /// Token verification failed (bad signature, expired, unknown subscriber).
+    /// Token verification failed (bad signature, expired, malformed).
     #[snafu(display("invalid token"))]
     InvalidToken,
 

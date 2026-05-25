@@ -90,15 +90,9 @@ async fn subscribe_then_confirm_round_trip() {
         .expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Subscriber should be in Pending state.
-    let sub = store
-        .subscriber_get("alice@example.com")
-        .expect("read")
-        .expect("subscriber present");
-    assert!(matches!(
-        sub.state,
-        epistole::store::SubscriberState::Pending
-    ));
+    // Subscribe no longer persists a Pending row before mailbox proof.
+    let sub = store.subscriber_get("alice@example.com").expect("read");
+    assert!(sub.is_none());
 
     // Mint a confirm token directly (production path mints inside the
     // handler and mails it; we replay the same code).
@@ -124,7 +118,7 @@ async fn subscribe_then_confirm_round_trip() {
         .expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Subscriber now Active.
+    // Subscriber now exists as Active; /confirm is the first durable write.
     let sub = store
         .subscriber_get("alice@example.com")
         .expect("read")
@@ -477,10 +471,10 @@ async fn rate_limit_keys_on_last_xff_entry_only() {
     clippy::expect_used,
     reason = "test scaffolding - panic on fail is the desired signal"
 )]
-async fn confirm_with_unknown_subscriber_returns_200_invalid_page_not_404() {
-    // Audit finding #12: confirm/unsubscribe must not 404 when the
-    // subscriber row is missing — that's a membership-disclosure oracle.
-    // Both branches return 200 + the same invalid-link page.
+async fn stateless_confirm_with_no_subscriber_creates_active_row() {
+    // Issue #5: confirmation is stateless. A valid signed confirm token
+    // proves mailbox ownership, so the subscriber row is created only here,
+    // not during /subscribe.
     use secrecy::ExposeSecret;
 
     let tmp = TempDir::new().expect("tempdir");
@@ -488,7 +482,7 @@ async fn confirm_with_unknown_subscriber_returns_200_invalid_page_not_404() {
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
     let app = router(Arc::clone(&store), Arc::clone(&cfg));
 
-    // Mint a valid confirm token for an address that's never been subscribed.
+    // Mint a valid confirm token for an address that's never been persisted.
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = epistole::token::Token::new(
         epistole::token::TokenKind::Confirm,
@@ -508,14 +502,22 @@ async fn confirm_with_unknown_subscriber_returns_200_invalid_page_not_404() {
         )
         .await
         .expect("response");
-    assert_eq!(resp.status(), StatusCode::OK, "ghost lookup must not 404");
+    assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.expect("body").to_bytes();
     let body_str = std::str::from_utf8(&body).expect("utf8");
     assert!(
-        body_str.contains("expired"),
-        "expected invalid-link page (membership-disclosure defense), got: {}",
+        body_str.contains("Subscription confirmed"),
+        "expected confirmed page, got: {}",
         &body_str[..body_str.len().min(200)]
     );
+    let sub = store
+        .subscriber_get("ghost@example.com")
+        .expect("read")
+        .expect("subscriber");
+    assert!(matches!(
+        sub.state,
+        epistole::store::SubscriberState::Active
+    ));
 }
 
 #[tokio::test]
@@ -618,7 +620,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
         .await
         .expect("response");
 
-    // 2. Confirm (Pending → Active)
+    // 2. Confirm (creates Active)
     let _ = app
         .clone()
         .oneshot(

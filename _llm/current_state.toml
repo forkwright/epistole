@@ -11,7 +11,7 @@ source_docs = [
 [state]
 summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows and deployment runbook in place."
 current_phase = "Phase 1.5 security remediation complete; Phase 2 SMTP relay + archive walking pending."
-updated = "2026-05-21"
+updated = "2026-05-25"
 
 [[recent]]
 date = "2026-05-06"
@@ -24,6 +24,10 @@ item = "token_secret rotation runbook + lint debt cleared + rust-toolchain bumpe
 [[recent]]
 date = "2026-05-21"
 item = "CLAUDE.md recovered from menos snapshot."
+
+[[recent]]
+date = "2026-05-25"
+item = "Subscribe path moved to stateless confirmation tokens; durable subscriber rows are first written on confirm."
 
 [[open_threads]]
 name = "SMTP integration"
@@ -38,7 +42,7 @@ status = "Phase 2 archive endpoint to walk sends partition (currently stub)."
 [[open_threads]]
 name = "Subscriber lifecycle bounds"
 issue = 5
-status = "Bounded lifecycle for pending subscribers — security followup."
+status = "Stateless confirm-token implementation; legacy pending rows purged after 24h at startup."
 
 [[open_threads]]
 name = "Ardent cutover"

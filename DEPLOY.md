@@ -55,7 +55,7 @@ echo "TOKEN_SECRET=$TOKEN_SECRET"
 echo "SEND_AUTH_TOKEN=$SEND_AUTH_TOKEN"
 ```
 
-Save both - you'll paste them into `/etc/epistole.env` in the next step. Losing them isn't catastrophic (regenerate, re-mint pending tokens, accept the brief disruption) but you'll want them in your password manager.
+Save both - you'll paste them into `/etc/epistole.env` in the next step. Losing them isn't catastrophic (regenerate, re-mint outstanding confirm links, accept the brief disruption) but you'll want them in your password manager.
 
 ## Step 5 - Install config + env file
 
@@ -409,7 +409,7 @@ If anything breaks during cutover:
 
 ## token_secret rotation
 
-`token_secret` signs the confirm + unsubscribe links emailed to subscribers. Rotate as a periodic hygiene measure (annually) or immediately on suspected leak. Rotation invalidates all outstanding pending-confirm + active-unsubscribe tokens; **active subscribers stay subscribed** (Active state is in the fjall keyspace, not in tokens), but pending subscribers must re-subscribe and active subscribers wanting to unsubscribe must request a fresh link.
+`token_secret` signs the confirm + unsubscribe links emailed to subscribers. Rotate as a periodic hygiene measure (annually) or immediately on suspected leak. Rotation invalidates all outstanding confirm + active-unsubscribe tokens; **active subscribers stay subscribed** (Active state is in the fjall keyspace, not in tokens), but visitors holding unclicked confirm links must re-subscribe and active subscribers wanting to unsubscribe must request a fresh link.
 
 ```bash
 # 1. Generate a new 32-byte secret (matches Step 4's generation):
@@ -429,11 +429,11 @@ journalctl -u epistole.service -n 50 --no-pager
 
 Operational notes:
 
-- **Pending-confirm impact**: any subscriber who clicked Subscribe before the rotation but hasn't clicked their confirm link yet will get a "token invalid" error on their stale link. The fix on their side is identical to a normal sign-up: re-subscribe to receive a fresh confirm link.
+- **Confirm-link impact**: any visitor who clicked Subscribe before the rotation but hasn't clicked their confirm link yet will get a "token invalid" error on their stale link. The fix on their side is identical to a normal sign-up: re-subscribe to receive a fresh confirm link.
 - **Active-unsubscribe impact**: pre-rotation unsubscribe links emailed in past Sends become invalid. Subscribers needing to unsubscribe land on a "token invalid" page and must request a fresh unsubscribe link (Phase 2 wiring will surface this via a "request new link" form; until then, they'd have to email the operator).
-- **Active subscribers are unaffected**: their Active state is keyed on `email_hash` in the fjall `subscribers` partition; no token re-issue needed.
+- **Active subscribers are unaffected**: their Active state is keyed by normalized email in the fjall `subscribers` partition; no token re-issue needed.
 
-The rotate-and-restart approach assumes pending-list size is small (typical for a fleet newsletter at this scale; per the Phase 0 design's "tiny pending list" assumption). If subscriber load grows enough that losing the pending bucket on every rotation becomes operationally painful, a future change can add a `token_secret_previous` config field that `verify()` falls back to during a rotation window. The original analysis in forkwright/epistole#3 concluded the maintenance cost of a two-secret window outweighed its benefit at Phase 0 scale; revisit that conclusion when subscriber-loss-on-rotation surfaces as real friction.
+The rotate-and-restart approach assumes outstanding unclicked confirm links are acceptable to invalidate. If that becomes operationally painful, a future change can add a `token_secret_previous` config field that `verify()` falls back to during a rotation window. The original analysis in forkwright/epistole#3 concluded the maintenance cost of a two-secret window outweighed its benefit at Phase 0 scale; revisit that conclusion when confirm-link loss surfaces as real friction.
 
 ## What's NOT in this runbook
 

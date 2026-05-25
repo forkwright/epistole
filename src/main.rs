@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use epistole::{Config, Error, Result, Store};
+use time::{Duration, OffsetDateTime};
 use tracing_subscriber::{EnvFilter, fmt};
 
 /// Command-line entry point for the epistole server.
@@ -41,6 +42,14 @@ async fn main() -> Result<()> {
             })?;
 
     let store = Arc::new(Store::open(&config.data_dir)?);
+    let purged_pending =
+        store.purge_expired_pending(OffsetDateTime::now_utc(), Duration::hours(24))?;
+    if purged_pending > 0 {
+        tracing::info!(
+            purged_pending,
+            "purged expired legacy pending subscribers at startup"
+        );
+    }
     let app = epistole::router(store, Arc::new(config));
 
     tracing::info!(addr = %bind, "epistole listening");
