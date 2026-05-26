@@ -96,7 +96,7 @@ pub(crate) async fn post(
     // enough entropy to correlate (64 bits — collision-free at any
     // realistic subscriber count) without leaking the address.
     let email_hash = {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha2::Sha256;
         let mut mac =
             Hmac::<Sha256>::new_from_slice(state.config.token_secret.expose_secret().as_bytes())
@@ -105,7 +105,12 @@ pub(crate) async fn post(
                 })?;
         mac.update(email_norm.as_bytes());
         let digest = mac.finalize().into_bytes();
-        format!("{digest:x}")[..16].to_owned()
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for b in &digest {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        hex[..16].to_owned()
     };
     tracing::info!(email_hmac_short = %email_hash, "confirm link minted (phase 0: operator mints URL out-of-band)");
 

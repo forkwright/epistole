@@ -52,8 +52,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 snafu = "0.9"
 
 # Tokens (URL-safe, time-limited, HMAC-signed)
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 base64 = "0.22"
 rand = "0.9"
 
