@@ -1,4 +1,4 @@
-//! Storage layer. fjall keyspace with three partitions:
+//! Storage layer. fjall database with three keyspaces:
 //!
 //! - `subscribers` - keyed by lowercased email; value is a JSON-encoded
 //!   [`Subscriber`] record. New confirms create `Active` rows directly;
@@ -9,13 +9,13 @@
 //! - `deliveries` - keyed by `<send_id>/<email>`; value is a
 //!   JSON-encoded [`Delivery`] record (status + timestamp + error).
 //!
-//! Single-writer per keyspace per fjall's contract - out-of-process
-//! tools must talk to the running server via HTTP, not open the keyspace
+//! Single-writer per database per fjall's contract - out-of-process
+//! tools must talk to the running server via HTTP, not open the database
 //! directly.
 
 use std::path::Path;
 
-use fjall::{Config as FjallConfig, Keyspace, PartitionCreateOptions, PartitionHandle};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -98,14 +98,14 @@ pub enum DeliveryStatus {
 }
 
 /// Persistence handle. One per process; cloning is cheap (the inner
-/// [`Keyspace`] manages its own Arc-shared state).
+/// [`Database`] manages its own Arc-shared state).
 pub struct Store {
-    _keyspace: Keyspace,
-    /// `subscribers` partition handle.
-    pub(crate) subscribers: PartitionHandle,
-    /// `sends` partition handle.
-    pub(crate) sends: PartitionHandle,
-    /// `deliveries` partition handle. Held open at startup so the LSM
+    _database: Database,
+    /// `subscribers` keyspace handle.
+    pub(crate) subscribers: Keyspace,
+    /// `sends` keyspace handle.
+    pub(crate) sends: Keyspace,
+    /// `deliveries` keyspace handle. Held open at startup so the LSM
     /// flush schedule covers it; the first read/write lands in Phase 2
     /// (forkwright/epistole#1) when `/send` walks subscribers and
     /// records per-recipient delivery outcomes.
@@ -113,7 +113,7 @@ pub struct Store {
         dead_code,
         reason = "Phase 2 (forkwright/epistole#1) wires per-recipient delivery records"
     )]
-    pub(crate) deliveries: PartitionHandle,
+    pub(crate) deliveries: Keyspace,
 }
 
 impl Store {
@@ -125,27 +125,26 @@ impl Store {
     /// create a partition.
     pub fn open(path: &Path) -> Result<Self> {
         guard_against_nested_keyspace(path)?;
-        let keyspace = FjallConfig::new(path).open().map_err(|e| Error::Store {
-            reason: format!("open keyspace at {}: {e}", path.display()),
+        let database = Database::builder(path).open().map_err(|e| Error::Store {
+            reason: format!("open database at {}: {e}", path.display()),
         })?;
-        let opts = PartitionCreateOptions::default();
-        let subscribers = keyspace
-            .open_partition("subscribers", opts.clone())
+        let subscribers = database
+            .keyspace("subscribers", KeyspaceCreateOptions::default)
             .map_err(|e| Error::Store {
-                reason: format!("subscribers partition: {e}"),
+                reason: format!("subscribers keyspace: {e}"),
             })?;
-        let sends = keyspace
-            .open_partition("sends", opts.clone())
+        let sends = database
+            .keyspace("sends", KeyspaceCreateOptions::default)
             .map_err(|e| Error::Store {
-                reason: format!("sends partition: {e}"),
+                reason: format!("sends keyspace: {e}"),
             })?;
-        let deliveries = keyspace
-            .open_partition("deliveries", opts)
+        let deliveries = database
+            .keyspace("deliveries", KeyspaceCreateOptions::default)
             .map_err(|e| Error::Store {
-                reason: format!("deliveries partition: {e}"),
+                reason: format!("deliveries keyspace: {e}"),
             })?;
         Ok(Self {
-            _keyspace: keyspace,
+            _database: database,
             subscribers,
             sends,
             deliveries,
@@ -183,8 +182,8 @@ impl Store {
     /// Each item resolves to [`Error::Store`] on fjall read or decode
     /// failure.
     pub fn iter_sends(&self) -> Result<impl Iterator<Item = Result<Send>>> {
-        Ok(self.sends.iter().map(|kv| {
-            let (_k, v) = kv.map_err(|e| Error::Store {
+        Ok(self.sends.iter().map(|guard| {
+            let v = guard.value().map_err(|e| Error::Store {
                 reason: format!("sends iter: {e}"),
             })?;
             serde_json::from_slice::<Send>(&v).map_err(|e| Error::Store {
@@ -252,8 +251,8 @@ impl Store {
         max_age: time::Duration,
     ) -> Result<usize> {
         let mut expired = Vec::new();
-        for kv in self.subscribers.iter() {
-            let (key, value) = kv.map_err(|e| Error::Store {
+        for guard in self.subscribers.iter() {
+            let (key, value) = guard.into_inner().map_err(|e| Error::Store {
                 reason: format!("subscribers iter: {e}"),
             })?;
             let subscriber: Subscriber =
