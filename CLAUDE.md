@@ -34,7 +34,7 @@ Deliverability boundary: epistole does not directly deliver to recipient inboxes
 - Local dev: `~/dev/epistole`
 - Forge: `forkwright/epistole`
 - GitHub mirror: `github:forkwright/epistole` (push-only via `kanon forge set-mirror`)
-- Production: aletheia subdomain `letters.<consumer-domain>.com` (TLS via the gateway reverse proxy - see DEPLOY.md; runs as a systemd service alongside other aletheia daemons)
+- Production: `letters.<your-domain>` (behind a reverse proxy; see DEPLOY.md; runs as a systemd service)
 
 ## Boundaries
 

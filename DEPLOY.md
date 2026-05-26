@@ -9,7 +9,7 @@ Estimated operator time once secrets are in hand: **~30 minutes**, gated on DNS 
 1. **SMTP relay account** - Postmark or Mailgun. Both have free tiers that cover hundreds of newsletter sends per month. Postmark's "Broadcasts" stream is the right product; Mailgun's "Sending" domain works too.
 2. **DNS access** for `<your-domain>` (Cloudflare DNS dashboard).
 3. **DKIM record** from the relay provider (their dashboard generates it).
-4. **A box that runs systemd** and reaches the public internet on 443 - `<deploy-host>` (any box that runs systemd and reaches the internet on 443). The runbook below assumes aletheia.
+4. **A box that runs systemd** and reaches the public internet on 443 - `<deploy-host>` (any box that runs systemd and reaches the internet on 443).
 
 ## Step 1 - Build + install the binary
 
@@ -36,7 +36,7 @@ The fjall keyspace lives at `/var/lib/epistole/data/`. Restic backup target shou
 
 ### Postmark path (recommended)
 
-1. Sign up at postmarkapp.com → create a "Server" (e.g. "Ardent Letters").
+1. Sign up at postmarkapp.com → create a "Server" (e.g. "<Your Brand> Letters").
 2. Add `<your-domain>` as a sender signature. Verify the SPF + DKIM records they hand you (drop into Cloudflare DNS).
 3. Generate a server API token. Username AND password for SMTP both = the API token.
 
@@ -69,7 +69,7 @@ Fill in:
 - `bind = "127.0.0.1:9090"` (Caddy reverse-proxies; no public bind)
 - `data_dir = "/var/lib/epistole/data"`
 - `base_url = "https://letters.<your-domain>"`
-- `[brand]` block with `name = "Ardent Leatherworks"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
+- `[brand]` block with `name = "<Your Brand Name>"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
 - `[smtp]` block with the Postmark/Mailgun credentials
 - `token_secret = "<TOKEN_SECRET from step 4>"`
 - `send_auth_token = "<SEND_AUTH_TOKEN from step 4>"`
@@ -109,10 +109,10 @@ curl -s http://127.0.0.1:9090/healthz
 Add to Cloudflare DNS (proxy ON - orange cloud):
 
 ```
-letters.<your-domain>  CNAME  <aletheia-host>.<domain>  proxied
+letters.<your-domain>  CNAME  <deploy-host>.<domain>  proxied
 ```
 
-If aletheia is on Tailscale only, point to the operator's Cloudflare Tunnel CNAME. Verify:
+If `<deploy-host>` is on Tailscale only, point to the operator's Cloudflare Tunnel CNAME. Verify:
 
 ```bash
 dig +short letters.<your-domain>
@@ -348,10 +348,10 @@ fjall-tools dump /var/lib/epistole/data/subscribers/ | jq
 
 If Phase 2 (forkwright/epistole#1) has landed, the confirm email will arrive in the test inbox via the SMTP relay.
 
-## Step 11 - Cut over ardent's contact form
+## Step 11 - Cut over <your-domain>'s contact form
 
 ```bash
-cd ~/dev/ardent-site
+cd ~/dev/<your-site>
 git checkout -b cutover/buttondown-to-epistole
 ```
 

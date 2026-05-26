@@ -66,7 +66,7 @@ keyspace. Out-of-process tools must use HTTP.
 
 ## Deployment
 
-- **Host:** aletheia subdomain (`letters.<domain>`).
-- **TLS:** Caddy reverse proxy terminates TLS.
+- **Host:** instance-configured host (`letters.<your-domain>`).
+- **TLS:** reverse proxy (Caddy, NPM, etc.) terminates TLS.
 - **Process:** systemd service (`epistole.service`) binding to loopback.
 - **Relay:** SMTP outbound via Postmark or Mailgun.
