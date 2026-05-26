@@ -1,15 +1,15 @@
 # Epistole deploy runbook
 
-End-to-end instructions for taking epistole from "Phase 0 substrate landed on main" to "letters.ardentleatherworks.com is live and the contact-page form posts to it."
+End-to-end instructions for taking epistole from "Phase 0 substrate landed on main" to "letters.<your-domain> is live and the contact-page form posts to it."
 
 Estimated operator time once secrets are in hand: **~30 minutes**, gated on DNS propagation and SMTP-relay account setup. None of these steps require Claude - they're operator-credential operations.
 
 ## What you'll need before you start
 
 1. **SMTP relay account** - Postmark or Mailgun. Both have free tiers that cover hundreds of newsletter sends per month. Postmark's "Broadcasts" stream is the right product; Mailgun's "Sending" domain works too.
-2. **DNS access** for `ardentleatherworks.com` (Cloudflare DNS dashboard).
+2. **DNS access** for `<your-domain>` (Cloudflare DNS dashboard).
 3. **DKIM record** from the relay provider (their dashboard generates it).
-4. **A box that runs systemd** and reaches the public internet on 443 - `aletheia` or `menos` both qualify. The runbook below assumes aletheia.
+4. **A box that runs systemd** and reaches the public internet on 443 - `<deploy-host>` (any box that runs systemd and reaches the internet on 443). The runbook below assumes aletheia.
 
 ## Step 1 - Build + install the binary
 
@@ -37,12 +37,12 @@ The fjall keyspace lives at `/var/lib/epistole/data/`. Restic backup target shou
 ### Postmark path (recommended)
 
 1. Sign up at postmarkapp.com → create a "Server" (e.g. "Ardent Letters").
-2. Add `ardentleatherworks.com` as a sender signature. Verify the SPF + DKIM records they hand you (drop into Cloudflare DNS).
+2. Add `<your-domain>` as a sender signature. Verify the SPF + DKIM records they hand you (drop into Cloudflare DNS).
 3. Generate a server API token. Username AND password for SMTP both = the API token.
 
 ### Mailgun path
 
-1. Add `mail.ardentleatherworks.com` (or `letters.ardentleatherworks.com`) as a sending domain.
+1. Add `mail.<your-domain>` (or `letters.<your-domain>`) as a sending domain.
 2. Add Mailgun's MX, SPF, DKIM, DMARC records to Cloudflare DNS.
 3. Generate an SMTP password from the domain's "Domain credentials" tab.
 
@@ -68,8 +68,8 @@ sudoedit /etc/epistole/epistole.toml
 Fill in:
 - `bind = "127.0.0.1:9090"` (Caddy reverse-proxies; no public bind)
 - `data_dir = "/var/lib/epistole/data"`
-- `base_url = "https://letters.ardentleatherworks.com"`
-- `[brand]` block with `name = "Ardent Leatherworks"`, `from_address = "letters@ardentleatherworks.com"`, optional `reply_to = "contact@ardentleatherworks.com"`
+- `base_url = "https://letters.<your-domain>"`
+- `[brand]` block with `name = "Ardent Leatherworks"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
 - `[smtp]` block with the Postmark/Mailgun credentials
 - `token_secret = "<TOKEN_SECRET from step 4>"`
 - `send_auth_token = "<SEND_AUTH_TOKEN from step 4>"`
@@ -104,35 +104,35 @@ curl -s http://127.0.0.1:9090/healthz
 # -> ok
 ```
 
-## Step 7 - DNS for letters.ardentleatherworks.com
+## Step 7 - DNS for letters.<your-domain>
 
 Add to Cloudflare DNS (proxy ON - orange cloud):
 
 ```
-letters.ardentleatherworks.com  CNAME  <aletheia-host>.<domain>  proxied
+letters.<your-domain>  CNAME  <aletheia-host>.<domain>  proxied
 ```
 
 If aletheia is on Tailscale only, point to the operator's Cloudflare Tunnel CNAME. Verify:
 
 ```bash
-dig +short letters.ardentleatherworks.com
+dig +short letters.<your-domain>
 ```
 
-## Step 8 - Reverse-proxy (NPM, on menos)
+## Step 8 - Reverse-proxy (NPM, on <reverse-proxy-host>)
 
-> **Note**: the original runbook assumed Caddy. The actual menos topology runs **Nginx Proxy Manager (NPM)** at the gateway pod (`100.74.109.2:443`). NPM does TLS termination via a wildcard `*.lan` (LAN) cert + Cloudflare-fronted public certs. Adding a new public host is a UI-driven operation; the steps below are the click-path plus the fields that matter for security.
+> **Note**: the original runbook assumed Caddy. Your deploy topology may run **Nginx Proxy Manager (NPM)** (or another reverse proxy) at `<gateway-ip>:443`. NPM does TLS termination via a wildcard LAN cert + Cloudflare-fronted public certs. Adding a new public host is a UI-driven operation; the steps below are the click-path plus the fields that matter for security.
 
 ### 8a - Add the proxy host in NPM
 
-Open NPM at `https://npm.lan` → **Hosts → Proxy Hosts → Add Proxy Host**.
+Open NPM at `https://<reverse-proxy-host>` → **Hosts → Proxy Hosts → Add Proxy Host**.
 
 **Details tab:**
 
 | Field | Value |
 |---|---|
-| Domain Names | `letters.ardentleatherworks.com` |
+| Domain Names | `letters.<your-domain>` |
 | Scheme | `http` |
-| Forward Hostname | `127.0.0.1` (epistole binds to loopback on the same box as NPM, OR the LAN IP of menos if NPM is on a different host) |
+| Forward Hostname | `127.0.0.1` (epistole binds to loopback on the same box as NPM, OR the LAN IP of <deploy-host> if the reverse proxy is on a different host) |
 | Forward Port | `9091` |
 | Cache Assets | OFF |
 | Block Common Exploits | **ON** |
@@ -240,20 +240,20 @@ End-to-end probes:
 
 ```bash
 # 1. Liveness - should return "ok"
-curl -sf https://letters.ardentleatherworks.com/healthz
+curl -sf https://letters.<your-domain>/healthz
 
 # 2. Real-IP-restoration probe - must surface the visitor IP, not a
 #    Cloudflare edge. Trigger from a known IP, then check both layers.
-curl -sf https://letters.ardentleatherworks.com/subscribe \
+curl -sf https://letters.<your-domain>/subscribe \
   -d email=runbook-probe@example.com -X POST > /dev/null
 
 # 2a. NPM access log shows the visitor IP (not 162.158.x.x / 172.64.x.x)
-sudo tail -1 /storage/npm/data/logs/proxy-host-*_access.log
+sudo tail -1 <reverse-proxy-data>/logs/proxy-host-*_access.log
 
 # 2b. epistole journal shows the visitor IP in the rate-limit key
 #     (look for the email_hmac_short field - the request itself
 #      doesn't echo IP, but the corresponding NPM line should)
-sudo journalctl --user -u menos-daimon-* 2>/dev/null || \
+sudo journalctl --user -u <deploy-host>-daimon-* 2>/dev/null || \
   sudo journalctl -u epistole.service --since "1 min ago" | grep "confirm link minted"
 ```
 
@@ -261,7 +261,7 @@ If NPM logs show a Cloudflare edge IP (162.158.x.x or 172.64.x.x range), the `se
 
 ### 8b - Verify CrowdSec is parsing the new proxy host
 
-CrowdSec already reads NPM's per-proxy-host log files (`/data/npm/data/logs/proxy-host-*_access.log`) under acquis.yaml's nginx source. The custom `forkwright/epistole-abuse` scenario triggers when one IP gets 5+ 4xx responses (401/413/429/400) from `letters.ardentleatherworks.com` inside 60s, banning at the firewall for 4 hours.
+CrowdSec already reads NPM's per-proxy-host log files (`<reverse-proxy-data>/logs/proxy-host-*_access.log`) under acquis.yaml's nginx source. The custom `forkwright/epistole-abuse` scenario triggers when one IP gets 5+ 4xx responses (401/413/429/400) from `letters.<your-domain>` inside 60s, banning at the firewall for 4 hours.
 
 Confirm the scenario is loaded:
 
@@ -273,7 +273,7 @@ sudo podman exec crowdsec cscli scenarios list | grep epistole
 Trigger from a test IP (do NOT do this from your real IP - you'll ban yourself for 4h):
 
 ```bash
-for i in {1..10}; do curl -s -X POST https://letters.ardentleatherworks.com/subscribe \
+for i in {1..10}; do curl -s -X POST https://letters.<your-domain>/subscribe \
   -H "X-Forwarded-For: 198.51.100.99" -d email=test@example.com -o /dev/null -w "%{http_code}\n"; done
 sudo podman exec crowdsec cscli decisions list | grep 198.51.100
 ```
@@ -282,7 +282,7 @@ sudo podman exec crowdsec cscli decisions list | grep 198.51.100
 
 ## Step 8c - Cloudflare edge protection (recommended)
 
-epistole sits behind Cloudflare proxying for `letters.ardentleatherworks.com` (orange cloud). Cloudflare provides DDoS scrubbing and bot-fight by default; two Page Rules / WAF rules tighten the public-internet attack surface before requests even reach NPM.
+epistole sits behind Cloudflare proxying for `letters.<your-domain>` (orange cloud). Cloudflare provides DDoS scrubbing and bot-fight by default; two Page Rules / WAF rules tighten the public-internet attack surface before requests even reach NPM.
 
 ### Rate-limit rule
 
@@ -291,7 +291,7 @@ Cloudflare Dashboard → **Security → WAF → Rate limiting rules → Create r
 | Field | Value |
 |---|---|
 | Rule name | `epistole-subscribe` |
-| Field | `URI Path` equals `/subscribe` AND `hostname` equals `letters.ardentleatherworks.com` |
+| Field | `URI Path` equals `/subscribe` AND `hostname` equals `letters.<your-domain>` |
 | Characteristics | `IP` |
 | Requests per period | `5` |
 | Period | `1 minute` |
@@ -316,7 +316,7 @@ Cloudflare Dashboard → **Zero Trust → Access → Applications → Add an app
 |---|---|
 | Application Name | `epistole-send` |
 | Subdomain | `letters` |
-| Domain | `ardentleatherworks.com` |
+| Domain | `<your-domain>` |
 | Path | `/send` |
 | Identity providers | One-time PIN to your email |
 
@@ -325,7 +325,7 @@ After enabling, `POST /send` requires a CF-Access JWT in addition to the bearer 
 ## Step 9 - DMARC record (recommended)
 
 ```
-_dmarc.ardentleatherworks.com  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@ardentleatherworks.com; aspf=r; adkim=r"
+_dmarc.<your-domain>  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@<your-domain>; aspf=r; adkim=r"
 ```
 
 This complements the SPF + DKIM records the relay provider gave you. `p=quarantine` is the safe middle ground; revisit `p=reject` after a week of clean DKIM.
@@ -334,7 +334,7 @@ This complements the SPF + DKIM records the relay provider gave you. `p=quaranti
 
 ```bash
 # Subscribe (substitute your real email)
-curl -sf -X POST https://letters.ardentleatherworks.com/subscribe \
+curl -sf -X POST https://letters.<your-domain>/subscribe \
   -d email=test@example.com
 
 # Look for the confirm URL in the journal - Phase 0 logs it instead of mailing
@@ -364,13 +364,13 @@ Edit `content/contact.md`:
 -  class="buttondown-form"
 ->
 +<form
-+  action="https://letters.ardentleatherworks.com/subscribe"
++  action="https://letters.<your-domain>/subscribe"
 +  method="post"
 +  class="newsletter-form"
 +>
 ```
 
-Edit `_headers` (under `Content-Security-Policy: form-action`) to swap `https://buttondown.com` → `https://letters.ardentleatherworks.com`.
+Edit `_headers` (under `Content-Security-Policy: form-action`) to swap `https://buttondown.com` → `https://letters.<your-domain>`.
 
 Edit `content/privacy.md` - replace any "Buttondown" reference with epistole's posture (zero third-party newsletter providers; subscriber list lives on operator's own server).
 
@@ -391,7 +391,7 @@ Phase 3 ships `bin/epistole-import` (not in scope for the Phase 0 substrate). Un
 
 ## Backups
 
-Add to `~/.local/bin/menos-backup`:
+Add to your backup script (e.g. `~/.local/bin/<deploy-host>-backup`):
 
 ```bash
 restic backup /var/lib/epistole --tag epistole
