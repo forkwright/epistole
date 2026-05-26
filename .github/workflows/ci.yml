@@ -92,10 +92,12 @@ jobs:
           persist-credentials: false
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: env.FLEET_REPO_TOKEN != ''
         with:
           repository: forkwright/kanon
           ref: 61211a19ea88a4186a77d417a4469d4a3dbdf1b2
           path: kanon
+          token: ${{ secrets.FLEET_REPO_TOKEN }}
           persist-credentials: false
 
       - name: Checkout kanon private build dependency
