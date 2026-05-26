@@ -1,3 +1,6 @@
+# epistole exposes no MCP server; empty array satisfies schema.
+mcp_tools = []
+
 [meta]
 name = "epistole"
 repo = "forkwright/epistole"
@@ -14,9 +17,6 @@ summary = "Epistole exposes one service binary and a small HTTP surface for news
 [[cli_commands]]
 name = "epistole"
 purpose = "Run the newsletter HTTP service from the configured bind address."
-
-# epistole exposes no MCP server; empty array satisfies schema.
-mcp_tools = []
 
 [[http_routes]]
 method = "GET"

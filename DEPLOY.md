@@ -278,7 +278,7 @@ for i in {1..10}; do curl -s -X POST https://letters.ardentleatherworks.com/subs
 sudo podman exec crowdsec cscli decisions list | grep 198.51.100
 ```
 
-(NPM strips X-Forwarded-For per the snippet above, so this test won't fire - to test, hit the endpoint directly from a test source IP rather than spoofing the header.)
+(NPM strips X-Forwarded-For per the snippet above, so this test does not fire - to test, hit the endpoint directly from a test source IP without spoofing the header.)
 
 ## Step 8c - Cloudflare edge protection (recommended)
 
