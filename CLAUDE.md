@@ -6,7 +6,7 @@ tightens: Rust service development, deployment, and CI expectations for this rep
 
 # CLAUDE.md: epistole
 
-Sovereign newsletter service for fleet web properties. Replaces Buttondown for ardentleatherworks.com (and any future typikon-consuming site that wants a newsletter).
+Sovereign newsletter service for fleet web properties. Replaces Buttondown for any typikon-consuming site that wants a self-hosted newsletter. The target domain is instance-config.
 
 The name is Greek: ἐπιστολή - "letter, epistle, dispatch sent." Newsletters are letters; the verb form means "send to."
 
@@ -27,7 +27,7 @@ A self-contained Rust service that owns:
 - **lettre** - SMTP outbound; relays through Postmark or Mailgun (deliverability is non-negotiable)
 - **rustls** - TLS
 
-Deliverability boundary: epistole does not directly deliver to recipient inboxes. It relays via Postmark/Mailgun (low-volume free tier; both rate-limited but plenty for the kind of newsletters this fleet sends). DKIM/SPF/DMARC live on the relay's outbound IP, not on menos.
+Deliverability boundary: epistole does not directly deliver to recipient inboxes. It relays via Postmark/Mailgun (low-volume free tier; both rate-limited but plenty for the kind of newsletters this fleet sends). DKIM/SPF/DMARC live on the relay's outbound IP, not on the deploy host.
 
 ## Where things live
 
