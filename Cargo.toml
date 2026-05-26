@@ -49,7 +49,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Errors
-snafu = "0.8"
+snafu = "0.9"
 
 # Tokens (URL-safe, time-limited, HMAC-signed)
 hmac = "0.12"
