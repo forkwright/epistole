@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# `cargo test` coverage is provided by `cargo nextest run` below.
+# `cargo deny` runs in the Security workflow alongside cargo-audit.
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          components: rustfmt
+          cache: false
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Check crate
+        run: cargo check --all-targets --jobs 8
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          components: clippy
+          cache: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Lint crate
+        run: cargo clippy --all-targets --jobs 8 -- -D warnings
+
+  nextest:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked --version 0.9.136
+      - name: Run nextest
+        run: cargo nextest run --build-jobs 8 --test-threads 8
+
+  kanon-lint:
+    name: kanon-lint
+    runs-on: ubuntu-latest
+    env:
+      FLEET_REPO_TOKEN: ${{ secrets.FLEET_REPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          path: epistole
+          persist-credentials: false
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: forkwright/kanon
+          ref: 61211a19ea88a4186a77d417a4469d4a3dbdf1b2
+          path: kanon
+          persist-credentials: false
+
+      - name: Checkout kanon private build dependency
+        if: env.FLEET_REPO_TOKEN != ''
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: forkwright/logismos
+          path: logismos
+          token: ${{ secrets.FLEET_REPO_TOKEN }}
+          persist-credentials: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        if: env.FLEET_REPO_TOKEN != ''
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: env.FLEET_REPO_TOKEN != ''
+        with:
+          workspaces: kanon
+
+      - name: Install kanon
+        if: env.FLEET_REPO_TOKEN != ''
+        run: cargo install --path kanon/crates/pragma --bin kanon --no-default-features --locked
+
+      - name: Lint with kanon
+        if: env.FLEET_REPO_TOKEN != ''
+        working-directory: epistole
+        run: kanon lint . --summary
+
+      - name: Report skipped kanon lint
+        if: env.FLEET_REPO_TOKEN == ''
+        run: |
+          echo "::warning::FLEET_REPO_TOKEN is not set; kanon CLI cannot be built on hosted runners."
+          echo "::warning::Run kanon lint . --summary locally until the public kanon binary install path is available."

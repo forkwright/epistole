@@ -1,0 +1,63 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for CI checks to pass
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+           steps.metadata.outputs.dependency-type == 'direct:development')
+        run: |
+          if ! gh pr checks "$PR_URL" --watch --interval 30 --required; then
+            echo "Required CI checks did not pass; skipping auto-merge"
+            exit 0
+          fi
+
+          checks="$(gh pr checks "$PR_URL" --json name,bucket)"
+          for check in Format Check Clippy Test kanon-lint "cargo deny" "cargo audit"; do
+            if ! jq --exit-status --arg check "$check" \
+              'any(.[]; .name == $check and .bucket == "pass")' \
+              <<<"$checks" >/dev/null; then
+              echo "CI check did not pass: $check; skipping auto-merge"
+              exit 0
+            fi
+          done
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge patch updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge minor dev dependency updates
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+          steps.metadata.outputs.dependency-type == 'direct:development'
+        run: gh pr merge --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

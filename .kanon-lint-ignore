@@ -1,0 +1,5 @@
+# Public library API is intentional: integration tests and import tools use
+# these types and helpers across the crate boundary.
+RUST/pub-visibility:src/error.rs
+RUST/pub-visibility:src/store.rs
+RUST/pub-visibility:src/token.rs
