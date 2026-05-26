@@ -28,15 +28,13 @@ A standalone Rust service:
 
 ## Status
 
-Phase 0 - substrate scaffold. Code does not yet build a working server. Subsequent commits land:
+Phase 1 - subscriber flows, archive, and operator send functional. SMTP delivery to subscribers tracked at [#3](https://github.com/forkwright/epistole/issues/3).
 
-1. Storage layer (subscribers, tokens, sends, delivery ledger)
-2. Public endpoints + maud templates for confirm/unsubscribe/archive pages
-3. Operator endpoint (`/send`) + markdown rendering
-4. SMTP relay integration (Postmark/Mailgun adapter) - tracked at issue #3
-5. Subscriber-import tool (`bin/epistole-import` for migrating from Buttondown)
-6. Systemd unit + reverse-proxy snippet for deploy (see DEPLOY.md)
-7. Cutover: replace Buttondown form on ardent's contact page
+- Full subscriber lifecycle: `/subscribe` -> confirm link -> `/confirm` -> `/unsubscribe`
+- Archive: `/archive` lists past sends; `/archive/{id}` renders individual issues
+- Operator: `POST /send` (bearer-gated) stores newsletter records; delivery pending SMTP integration
+- Systemd unit and full reverse-proxy deploy runbook in [DEPLOY.md](DEPLOY.md)
+- Subscriber-import tool and `<your-domain>` contact form cutover are follow-up items
 
 See `CLAUDE.md` for boundaries and conventions.
 

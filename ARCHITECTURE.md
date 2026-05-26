@@ -28,12 +28,12 @@ is un-rate-limited but bearer-gated.
 
 One `fjall::Keyspace` with three partitions:
 
-- **`subscribers`** — keyed by lowercased email. Value is a JSON-encoded
+- **`subscribers`** - keyed by lowercased email. Value is a JSON-encoded
   `Subscriber` record (`state`, `created_at`, `confirmed_at`,
   `unsubscribed_at`).
-- **`sends`** — keyed by ULID. Value is a JSON-encoded `Send` record
+- **`sends`** - keyed by ULID. Value is a JSON-encoded `Send` record
   (`subject`, `body_html`, `sent_at`).
-- **`deliveries`** — keyed by `<send_id>/<email>`. Value is a JSON-encoded
+- **`deliveries`** - keyed by `<send_id>/<email>`. Value is a JSON-encoded
   `Delivery` record (`status`, `at`, `error`).
 
 **Single-writer invariant:** only the running server process opens the
@@ -66,7 +66,7 @@ keyspace. Out-of-process tools must use HTTP.
 
 ## Deployment
 
-- **Host:** aletheia subdomain (`letters.<domain>`).
-- **TLS:** Caddy reverse proxy terminates TLS.
+- **Host:** instance-configured host (`letters.<your-domain>`).
+- **TLS:** reverse proxy (Caddy, NPM, etc.) terminates TLS.
 - **Process:** systemd service (`epistole.service`) binding to loopback.
 - **Relay:** SMTP outbound via Postmark or Mailgun.

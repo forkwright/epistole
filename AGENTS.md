@@ -1,3 +1,9 @@
+<!--
+scope: epistole agent guide
+defers_to: CLAUDE.md
+tightens: agent workflow, commands, and boundaries for epistole
+-->
+
 # AGENTS.md: epistole
 
 Cross-tool agent guide for the epistole newsletter service. Complements

@@ -10,8 +10,8 @@ source_docs = [
 
 [state]
 summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows and deployment runbook in place."
-current_phase = "Phase 1.5 security remediation complete; Phase 2 SMTP relay + archive walking pending."
-updated = "2026-05-25"
+current_phase = "Phase 1 complete: subscriber lifecycle, archive, and operator send endpoint functional. SMTP relay delivery (issue #3) pending."
+updated = "2026-05-26"
 
 [[recent]]
 date = "2026-05-06"
@@ -23,11 +23,23 @@ item = "token_secret rotation runbook + lint debt cleared + rust-toolchain bumpe
 
 [[recent]]
 date = "2026-05-21"
-item = "CLAUDE.md recovered from menos snapshot."
+item = "CLAUDE.md recovered from snapshot."
 
 [[recent]]
 date = "2026-05-25"
 item = "Subscribe path moved to stateless confirmation tokens; durable subscriber rows are first written on confirm."
+
+[[recent]]
+date = "2026-05-26"
+item = "Archive endpoint (issue #4) landed in PR #14; sends partition walk complete."
+
+[[recent]]
+date = "2026-05-26"
+item = "fjall 2.x to 3.1.4 migration (issue #21) closed in PR #28."
+
+[[recent]]
+date = "2026-05-26"
+item = "AGENTS.md and ARCHITECTURE.md added (issue #25) in PR #27."
 
 [[open_threads]]
 name = "SMTP integration"
@@ -35,16 +47,6 @@ issue = 3
 status = "lettre integration in subscribe + send remains tracked as the next service milestone."
 
 [[open_threads]]
-name = "Archive endpoint"
-issue = 4
-status = "Phase 2 archive endpoint to walk sends partition (currently stub)."
-
-[[open_threads]]
-name = "Subscriber lifecycle bounds"
-issue = 5
-status = "Stateless confirm-token implementation; legacy pending rows purged after 24h at startup."
-
-[[open_threads]]
-name = "Ardent cutover"
+name = "Consumer site cutover"
 issue = 0
 status = "Contact-page form replacement waits for deployed epistole service."
