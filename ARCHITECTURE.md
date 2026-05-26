@@ -28,12 +28,12 @@ is un-rate-limited but bearer-gated.
 
 One `fjall::Keyspace` with three partitions:
 
-- **`subscribers`** — keyed by lowercased email. Value is a JSON-encoded
+- **`subscribers`** - keyed by lowercased email. Value is a JSON-encoded
   `Subscriber` record (`state`, `created_at`, `confirmed_at`,
   `unsubscribed_at`).
-- **`sends`** — keyed by ULID. Value is a JSON-encoded `Send` record
+- **`sends`** - keyed by ULID. Value is a JSON-encoded `Send` record
   (`subject`, `body_html`, `sent_at`).
-- **`deliveries`** — keyed by `<send_id>/<email>`. Value is a JSON-encoded
+- **`deliveries`** - keyed by `<send_id>/<email>`. Value is a JSON-encoded
   `Delivery` record (`status`, `at`, `error`).
 
 **Single-writer invariant:** only the running server process opens the

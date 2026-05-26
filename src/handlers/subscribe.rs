@@ -108,7 +108,8 @@ pub(crate) async fn post(
         let mut hex = String::with_capacity(digest.len() * 2);
         for b in &digest {
             use std::fmt::Write;
-            let _ = write!(hex, "{b:02x}");
+            // WHY: write! to String is infallible; unwrap_or(()) is idiomatic.
+            write!(hex, "{b:02x}").unwrap_or(());
         }
         hex[..16].to_owned()
     };
