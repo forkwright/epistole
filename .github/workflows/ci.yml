@@ -25,7 +25,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
@@ -39,7 +39,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
@@ -53,7 +53,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
@@ -68,7 +68,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
@@ -86,12 +86,12 @@ jobs:
     env:
       FLEET_REPO_TOKEN: ${{ secrets.FLEET_REPO_TOKEN }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           path: epistole
           persist-credentials: false
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         if: env.FLEET_REPO_TOKEN != ''
         with:
           repository: forkwright/kanon
@@ -102,7 +102,7 @@ jobs:
 
       - name: Checkout kanon private build dependency
         if: env.FLEET_REPO_TOKEN != ''
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: forkwright/logismos
           path: logismos
