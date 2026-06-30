@@ -68,7 +68,7 @@ toml = "1.1"
 clap = { version = "4", features = ["derive"] }
 
 [dependencies.tower-http]
-version = "0.6"
+version = "0.7"
 features = ["trace", "limit", "cors", "timeout"]
 
 [dependencies.lettre]
