@@ -1,0 +1,4 @@
+# OSV-Scanner advisory waiver list.
+# Entries must mirror .cargo/audit.toml [[advisories.ignore]] and deny.toml
+# [[advisories.ignore]] so all three scanners agree. Add entries with a
+# WHY comment and the date added.
