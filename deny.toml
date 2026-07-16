@@ -9,18 +9,7 @@ all-features = false
 # WHY: keep in sync with .cargo/audit.toml's [advisories.ignore] array.
 # cargo-audit does not read deny.toml, so any ignore lives in both files.
 yanked = "deny"
-ignore = [
-    # WHY: lettre 0.11.21 TLS hostname verification bypass affects only
-    # the `boring-tls` feature (advisory: "Other TLS backends
-    # (`native-tls`, `rustls`) are unaffected."). epistole's Cargo.toml
-    # pins lettre with `default-features = false` + explicit
-    # `tokio1-rustls`, `ring`, `webpki-roots` features — `boring-tls` is
-    # never enabled, so the inverted-boolean code path is unreachable.
-    # Drop this ignore on next `lettre` bump to >=0.11.22.
-    # Dep chain: lettre 0.11.21 -> epistole 0.0.1 (direct dep).
-    # Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0141
-    "RUSTSEC-2026-0141",
-]
+ignore = []
 
 [licenses]
 # WHY: epistole is AGPL-3.0-or-later (declared in Cargo.toml). Allow list
