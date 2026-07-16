@@ -55,7 +55,7 @@ snafu = "0.9"
 hmac = "0.13"
 sha2 = "0.11"
 base64 = "0.22"
-rand = "0.9"
+rand = "0.10"
 
 # Secret handling (zeroize on drop, no Debug/Display leakage)
 secrecy = { version = "0.10", features = ["serde"] }
@@ -68,7 +68,7 @@ toml = "1.1"
 clap = { version = "4", features = ["derive"] }
 
 [dependencies.tower-http]
-version = "0.6"
+version = "0.7"
 features = ["trace", "limit", "cors", "timeout"]
 
 [dependencies.lettre]
