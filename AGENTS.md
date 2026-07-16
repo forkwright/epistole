@@ -26,8 +26,8 @@ kanon lint . --summary
 - **No secrets in git.** Tokens, SMTP credentials, and HMAC keys live in
   `/etc/epistole.env` on the deploy host. Templated as `{{ ENV_VAR }}` in
   `epistole.toml`.
-- **Push to the forkwright forge (`origin`), not GitHub directly.** The
-  GitHub mirror is push-only via `kanon forge set-mirror`.
+- **Push directly to `origin` (`github.com/forkwright/epistole`).** GitHub
+  is canonical hosting for this repo, not a forge mirror.
 - **One `fjall::Keyspace` per process.** Out-of-process workers (imports,
   batch jobs, etc.) must talk to the running server over HTTP; opening the
   keyspace from another process violates the single-writer invariant.
