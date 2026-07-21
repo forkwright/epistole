@@ -74,6 +74,12 @@ jobs:
         run: cargo audit --deny unmaintained --deny unsound --deny yanked
 
   osv-scanner:
+    # WARNING: permissions here must be exactly {actions: read, contents:
+    # read, security-events: write}. The reusable workflow (google/osv-scanner-action)
+    # requires all three; dropping any one makes every run (push + workflow_dispatch)
+    # fail instantly as startup_failure with zero jobs scheduled. aletheia/theatron/
+    # harmonia call this identical pinned SHA successfully with this exact
+    # permission set — mirrored here.
     name: osv-scanner
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2
     with:
@@ -81,5 +87,6 @@ jobs:
         --lockfile=./Cargo.lock
         --config=./osv-scanner.toml
     permissions:
-      security-events: write
+      actions: read
       contents: read
+      security-events: write
