@@ -29,7 +29,7 @@ ammonia = "4"
 
 # Lexicographic, monotonic, time-prefixed identifier for Send records.
 # Replaces wall-clock-nanosecond send_ids that collided on same-ns sends.
-ulid = "1"
+ulid = "3"
 
 # HTML rendering (compile-time templates, type-safe, zero runtime deps)
 maud = { version = "0.27", features = ["axum"] }

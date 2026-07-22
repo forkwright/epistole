@@ -129,7 +129,7 @@ pub(crate) async fn post(
     //    Replaces wall-clock unix_timestamp_nanos which collided on
     //    same-nanosecond sends and was sensitive to clock step.
     let now = OffsetDateTime::now_utc();
-    let send_id = Ulid::new().to_string();
+    let send_id = Ulid::generate().to_string();
     let send_rec = Send {
         id: send_id.clone(),
         subject: body.subject.clone(),
