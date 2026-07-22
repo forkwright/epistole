@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # PROJECT: security hardening: never expose token to steps
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
@@ -74,6 +74,12 @@ jobs:
         run: cargo audit --deny unmaintained --deny unsound --deny yanked
 
   osv-scanner:
+    # WARNING: permissions here must be exactly {actions: read, contents:
+    # read, security-events: write}. The reusable workflow (google/osv-scanner-action)
+    # requires all three; dropping any one makes every run (push + workflow_dispatch)
+    # fail instantly as startup_failure with zero jobs scheduled. aletheia/theatron/
+    # harmonia call this identical pinned SHA successfully with this exact
+    # permission set — mirrored here.
     name: osv-scanner
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2
     with:
@@ -81,5 +87,6 @@ jobs:
         --lockfile=./Cargo.lock
         --config=./osv-scanner.toml
     permissions:
-      security-events: write
+      actions: read
       contents: read
+      security-events: write

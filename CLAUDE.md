@@ -32,13 +32,12 @@ Deliverability boundary: epistole does not directly deliver to recipient inboxes
 ## Where things live
 
 - Local dev: `~/dev/epistole`
-- Forge: `forkwright/epistole`
-- GitHub mirror: `github:forkwright/epistole` (push-only via `kanon forge set-mirror`)
+- GitHub: `github.com/forkwright/epistole` (canonical hosting — `origin`; not a forge mirror)
 - Production: `letters.<your-domain>` (behind a reverse proxy; see DEPLOY.md; runs as a systemd service)
 
 ## Boundaries
 
-- Push to `origin` (forkwright forge), not to GitHub directly.
+- Push directly to `origin` (`github.com/forkwright/epistole`) — GitHub is canonical hosting for this repo, not a forge mirror.
 - Never commit secrets - Postmark API tokens, SMTP creds, HMAC keys, etc. live in `/etc/epistole.env` (0600 root:root) on the deploy host; templated through `{{ ENV_VAR }}` in `epistole.toml`.
 - Never write blocking code in async contexts (the `await_holding_lock` lint catches the obvious cases).
 - All persisted writes go through one `fjall::Keyspace` - out-of-process workers (when added) must talk to epistole via HTTP, not by opening the keyspace directly.
