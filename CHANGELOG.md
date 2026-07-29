@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/forkwright/epistole/compare/v0.1.0...v0.1.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **release:** keep Cargo.lock in lockstep with the package version ([#76](https://github.com/forkwright/epistole/issues/76)) ([7c9090d](https://github.com/forkwright/epistole/commit/7c9090d2065c18153c6851fa1c0723e47f9a67d0)), closes [#75](https://github.com/forkwright/epistole/issues/75)
+
 ## [0.1.0](https://github.com/forkwright/epistole/compare/v0.0.1...v0.1.0) (2026-07-28)
 
 
