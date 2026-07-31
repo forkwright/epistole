@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
+use crate::send_id::SendId;
 
 /// Subscriber lifecycle state. Tokens reference one of these implicitly
 /// via their `kind` field - a `confirm` token creates or confirms an
@@ -57,8 +58,8 @@ pub struct Subscriber {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Send {
-    /// Send id - lexicographic timestamp (nanoseconds since epoch).
-    pub id: String,
+    /// Send id.
+    pub id: SendId,
     /// Subject line stamped onto every outbound mail.
     pub subject: String,
     /// Rendered HTML body (markdown was rendered to HTML at send time).
@@ -73,7 +74,7 @@ pub struct Send {
 #[non_exhaustive]
 pub struct Delivery {
     /// Foreign key to [`Send::id`].
-    pub send_id: String,
+    pub send_id: SendId,
     /// Recipient (lowercased email; matches a [`Subscriber::email`]).
     pub email: String,
     /// Outcome.
@@ -198,10 +199,10 @@ impl Store {
     ///
     /// Returns [`Error::Store`] on a fjall read failure or JSON decode
     /// failure.
-    pub fn send_get(&self, send_id: &str) -> Result<Option<Send>> {
+    pub fn send_get(&self, send_id: &SendId) -> Result<Option<Send>> {
         let raw = self
             .sends
-            .get(send_id.as_bytes())
+            .get(send_id.to_string().as_bytes())
             .map_err(|e| Error::Store {
                 reason: format!("send_get {send_id}: {e}"),
             })?;
