@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
-use ulid::Ulid;
 
 use crate::AppState;
 use crate::error::{Error, Result};
+use crate::send_id::SendId;
 use crate::store::Send;
 
 /// Hard cap on `/send` request bodies. Mirrors the router-level
@@ -36,7 +36,7 @@ pub(crate) struct Body {
 /// Reply payload for `POST /send`.
 #[derive(Debug, Serialize)]
 pub(crate) struct Reply {
-    pub(crate) send_id: String,
+    pub(crate) send_id: SendId,
     pub(crate) queued_recipients: usize,
 }
 
@@ -129,9 +129,9 @@ pub(crate) async fn post(
     //    Replaces wall-clock unix_timestamp_nanos which collided on
     //    same-nanosecond sends and was sensitive to clock step.
     let now = OffsetDateTime::now_utc();
-    let send_id = Ulid::generate().to_string();
+    let send_id = SendId::generate();
     let send_rec = Send {
-        id: send_id.clone(),
+        id: send_id,
         subject: body.subject.clone(),
         body_html: html_out,
         sent_at: now,
@@ -142,7 +142,7 @@ pub(crate) async fn post(
     state
         .store
         .sends
-        .insert(send_id.as_bytes(), serialized)
+        .insert(send_id.to_string().as_bytes(), serialized)
         .map_err(|e| Error::Store {
             reason: format!("sends partition write: {e}"),
         })?;
