@@ -26,6 +26,16 @@ use crate::store::Send;
 /// by a stripped layer.
 const SEND_BODY_LIMIT_BYTES: usize = 256 * 1024;
 
+/// Hard cap on the stored `subject`, in bytes.
+///
+/// WHY: the subject is persisted verbatim and rendered into the archive
+/// index, the detail page `<h1>` and the `<title>`, so without a bound
+/// one send decides the size of every page it appears on — and the body
+/// limit alone permits a 256 KiB subject. 200 bytes sits well above the
+/// 78-character subject line RFC 5322 recommends and far below its
+/// 998-octet hard limit, so no realistic newsletter subject is refused.
+const MAX_SUBJECT_LEN: usize = 200;
+
 /// Request body for `POST /send`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Body {
@@ -70,9 +80,9 @@ fn check_bearer(headers: &HeaderMap, expected: &str) -> bool {
 /// # Errors
 ///
 /// Returns [`Error::Unauthorized`] when the bearer token is missing or
-/// wrong, [`Error::BadRequest`] on an oversized body, empty subject,
-/// malformed JSON, or missing markdown, [`Error::Store`] on a fjall
-/// failure.
+/// wrong, [`Error::BadRequest`] on an oversized body, an empty subject,
+/// a subject over [`MAX_SUBJECT_LEN`] bytes, malformed JSON, or missing
+/// markdown, [`Error::Store`] on a fjall failure.
 pub(crate) async fn post(
     State(state): State<AppState>,
     request: Request,
@@ -103,6 +113,13 @@ pub(crate) async fn post(
     if body.subject.trim().is_empty() {
         return Err(Error::BadRequest {
             reason: "subject is empty".to_owned(),
+        });
+    }
+    // WHY: measured on the value actually stored, not the trimmed one, so
+    // the bound covers exactly what the archive pages will render.
+    if body.subject.len() > MAX_SUBJECT_LEN {
+        return Err(Error::BadRequest {
+            reason: format!("subject exceeds {MAX_SUBJECT_LEN} bytes"),
         });
     }
     if body.markdown.trim().is_empty() {

@@ -14,18 +14,30 @@ use crate::templates;
 const INDEX_CACHE_CONTROL: &str = "public, max-age=300";
 const DETAIL_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
+/// Most recent sends rendered on the archive index.
+///
+/// WHY: `GET /archive` is unauthenticated and the sends partition only
+/// ever grows, so rendering every record lets accumulated history decide
+/// both the response size and the memory one request costs. Capping the
+/// page keeps that bounded; the newest sends are the ones a reader wants
+/// and every send stays reachable at its own permanent detail URL.
+const INDEX_LIMIT: usize = 100;
+
 /// Handle `GET /archive`.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Store`] when iterating the sends partition fails.
+/// Returns [`Error::Store`] when reading the sends partition fails.
 pub(crate) async fn get(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    let mut sends = state.store.iter_sends()?.collect::<Result<Vec<_>>>()?;
-    sends.sort_by_key(|s| std::cmp::Reverse(s.id));
+    // WHY: ask for one past the cap so a full page can be distinguished
+    // from a truncated one without counting the whole partition.
+    let mut sends = state.store.recent_sends(INDEX_LIMIT + 1)?;
+    let truncated = sends.len() > INDEX_LIMIT;
+    sends.truncate(INDEX_LIMIT);
 
     Ok((
         [(header::CACHE_CONTROL, INDEX_CACHE_CONTROL)],
-        templates::archive_index(&state.config.brand.name, &sends),
+        templates::archive_index(&state.config.brand.name, &sends, truncated),
     ))
 }
 

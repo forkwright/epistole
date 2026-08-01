@@ -78,7 +78,7 @@ pub(crate) fn invalid_token(brand: &str) -> Markup {
 }
 
 /// Archive index page listing persisted newsletter sends.
-pub(crate) fn archive_index(brand: &str, sends: &[Send]) -> Markup {
+pub(crate) fn archive_index(brand: &str, sends: &[Send], truncated: bool) -> Markup {
     let body = html! {
         h1 { "Archive" }
         @if sends.is_empty() {
@@ -91,6 +91,11 @@ pub(crate) fn archive_index(brand: &str, sends: &[Send]) -> Markup {
                         time datetime=(datetime_attr(send.sent_at)) { (date_label(send.sent_at)) }
                     }
                 }
+            }
+            // WHY: the index is capped, so say so rather than letting a
+            // reader believe the list is the complete history.
+            @if truncated {
+                p { "Showing the most recent " (sends.len()) " notes." }
             }
         }
     };
