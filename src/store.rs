@@ -12,10 +12,33 @@
 //! Single-writer per database per fjall's contract - out-of-process
 //! tools must talk to the running server via HTTP, not open the database
 //! directly.
+//!
+//! # Durability boundary
+//!
+//! fjall's `Keyspace::insert`/`remove` persist with [`PersistMode::Buffer`],
+//! which reaches the OS page cache but survives no power loss or OS crash.
+//! Returning HTTP success off a buffered write acknowledges a consent
+//! decision the store may not hold after a hard reset.
+//!
+//! Every write therefore states its durability class, and the keyspace
+//! handles are private so no caller can bypass that choice:
+//!
+//! - **Acknowledged** ([`Store::subscriber_put`], [`Store::send_put`]) -
+//!   fsynced via [`PersistMode::SyncData`] *before* the call returns, so a
+//!   handler that has returned 200 has state the store will still hold
+//!   after a power loss.
+//! - **Reconstructible** ([`Store::purge_expired_pending`]) - a cleanup no
+//!   client is waiting on. A lost purge replays on the next run, so it
+//!   syncs once at the end rather than per row.
+//!
+//! NOTE: fjall journals all keyspaces of one `Database` together, so an
+//! acknowledged write also makes every earlier buffered write durable. The
+//! classes bound *latency*, not correctness: no acknowledged transition can
+//! be reordered behind a buffered one.
 
 use std::path::Path;
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -101,11 +124,13 @@ pub enum DeliveryStatus {
 /// Persistence handle. One per process; cloning is cheap (the inner
 /// [`Database`] manages its own Arc-shared state).
 pub struct Store {
-    _database: Database,
+    /// Journal owner. Every keyspace of one `Database` shares it, so this
+    /// is the single handle through which a write is made durable.
+    database: Database,
     /// `subscribers` keyspace handle.
-    pub(crate) subscribers: Keyspace,
+    subscribers: Keyspace,
     /// `sends` keyspace handle.
-    pub(crate) sends: Keyspace,
+    sends: Keyspace,
     /// `deliveries` keyspace handle. Held open at startup so the LSM
     /// flush schedule covers it; the first read/write lands in Phase 2
     /// (forkwright/epistole#1) when `/send` walks subscribers and
@@ -114,7 +139,7 @@ pub struct Store {
         dead_code,
         reason = "Phase 2 (forkwright/epistole#1) wires per-recipient delivery records"
     )]
-    pub(crate) deliveries: Keyspace,
+    deliveries: Keyspace,
 }
 
 impl Store {
@@ -145,11 +170,27 @@ impl Store {
                 reason: format!("deliveries keyspace: {e}"),
             })?;
         Ok(Self {
-            _database: database,
+            database,
             subscribers,
             sends,
             deliveries,
         })
+    }
+
+    /// Flush the journal to disk with `fdatasync` so writes issued before
+    /// this call survive a power loss.
+    ///
+    /// `SyncData` rather than `SyncAll`: the journal is an append-only file
+    /// whose size is the only metadata a reader needs, and `fdatasync`
+    /// already persists the metadata required to retrieve the written
+    /// bytes. `SyncAll` would add an inode-attribute flush that buys no
+    /// extra recovery guarantee here.
+    fn persist_acknowledged(&self) -> Result<()> {
+        self.database
+            .persist(PersistMode::SyncData)
+            .map_err(|e| Error::Store {
+                reason: format!("persist journal: {e}"),
+            })
     }
 
     /// Look up a subscriber by lowercased email.
@@ -216,13 +257,19 @@ impl Store {
         }
     }
 
-    /// Insert or replace a subscriber record.
+    /// Insert or replace a subscriber record, durably.
+    ///
+    /// Every caller is a consent transition the visitor is acknowledged
+    /// for — `/confirm` flips to `Active`, `/unsubscribe` to
+    /// `Unsubscribed` — so this returns only once the record is fsynced.
+    /// A handler that has seen `Ok` may render its success page.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Store`] on a fjall write failure or serde encode
-    /// failure (the latter is effectively unreachable for the well-typed
-    /// [`Subscriber`] but is reported as a `Store` error for uniformity).
+    /// Returns [`Error::Store`] on a fjall write failure, a journal sync
+    /// failure, or serde encode failure (the last is effectively
+    /// unreachable for the well-typed [`Subscriber`] but is reported as a
+    /// `Store` error for uniformity).
     pub fn subscriber_put(&self, subscriber: &Subscriber) -> Result<()> {
         let key = subscriber.email.to_ascii_lowercase();
         let bytes = serde_json::to_vec(subscriber).map_err(|e| Error::Store {
@@ -232,7 +279,30 @@ impl Store {
             .insert(key.as_bytes(), bytes)
             .map_err(|e| Error::Store {
                 reason: format!("subscriber_put {}: {e}", subscriber.email),
-            })
+            })?;
+        self.persist_acknowledged()
+    }
+
+    /// Insert or replace a send record, durably.
+    ///
+    /// `POST /send` returns the `send_id` to the operator, who may treat
+    /// it as a handle to an existing send, so the record is fsynced before
+    /// this returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall write failure, a journal sync
+    /// failure, or serde encode failure.
+    pub fn send_put(&self, send: &Send) -> Result<()> {
+        let bytes = serde_json::to_vec(send).map_err(|e| Error::Store {
+            reason: format!("encode send {}: {e}", send.id),
+        })?;
+        self.sends
+            .insert(send.id.to_string().as_bytes(), bytes)
+            .map_err(|e| Error::Store {
+                reason: format!("sends partition write: {e}"),
+            })?;
+        self.persist_acknowledged()
     }
 
     /// Purge legacy `Pending` subscribers whose `created_at` is older than
@@ -242,10 +312,15 @@ impl Store {
     /// deployments may have stale pre-fix rows. This one-shot cleanup bounds
     /// that legacy state without touching `Active` or `Unsubscribed` rows.
     ///
+    /// Reconstructible rather than acknowledged: no client waits on the
+    /// purge, and a run lost to a power cut simply finds the same expired
+    /// rows next time. It therefore syncs once at the end, and only when it
+    /// deleted something, rather than paying an fsync per row.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::Store`] on fjall read/write failures or JSON decode
-    /// failures.
+    /// Returns [`Error::Store`] on fjall read/write failures, a journal sync
+    /// failure, or JSON decode failures.
     pub fn purge_expired_pending(
         &self,
         now: OffsetDateTime,
@@ -272,6 +347,9 @@ impl Store {
             self.subscribers.remove(key).map_err(|e| Error::Store {
                 reason: format!("pending purge remove: {e}"),
             })?;
+        }
+        if deleted > 0 {
+            self.persist_acknowledged()?;
         }
         Ok(deleted)
     }
@@ -457,6 +535,144 @@ mod pending_purge_tests {
                 .expect("read")
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+
+    /// NOTE: what these tests can and cannot establish.
+    ///
+    /// They reopen the keyspace and assert the acknowledged transition is
+    /// still there, which catches a transition that was never written, was
+    /// written to the wrong key, or was undone by a later sweep.
+    ///
+    /// They do NOT prove the `fdatasync` happened. Buffered writes reach
+    /// the OS page cache, so they survive both process exit and `SIGKILL`;
+    /// only cutting power to the machine distinguishes `Buffer` from
+    /// `SyncData`, and no in-process test can do that. The structural
+    /// guarantee that every acknowledged write picks `SyncData` is enforced
+    /// instead by `tests/fitness/main.rs`, which fails if a caller reaches
+    /// past `Store` to a keyspace handle.
+    ///
+    /// A graceful drop is required here rather than incidental: fjall holds
+    /// a lock file for its single-writer contract, so the first handle must
+    /// release before the same path can be opened again.
+    ///
+    /// The `TempDir` is returned alongside the handle because dropping it
+    /// deletes the directory out from under the reopened store.
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn write_then_reopen<W>(write: W) -> (Store, tempfile::TempDir)
+    where
+        W: FnOnce(&Store),
+    {
+        let path = tempfile::TempDir::new().expect("tempdir");
+        {
+            let store = Store::open(path.path()).expect("open");
+            write(&store);
+        }
+        let reopened = Store::open(path.path()).expect("reopen");
+        (reopened, path)
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn an_acknowledged_unsubscribe_cannot_resurrect_an_active_subscriber() {
+        // The acceptance sentence of forkwright/epistole#69, as a test.
+        let now = OffsetDateTime::now_utc();
+        let (store, _dir) = write_then_reopen(|store| {
+            store
+                .subscriber_put(&Subscriber {
+                    email: "reader@example.com".to_owned(),
+                    state: SubscriberState::Active,
+                    created_at: now,
+                    confirmed_at: Some(now),
+                    unsubscribed_at: None,
+                })
+                .expect("confirm");
+            store
+                .subscriber_put(&Subscriber {
+                    email: "reader@example.com".to_owned(),
+                    state: SubscriberState::Unsubscribed,
+                    created_at: now,
+                    confirmed_at: Some(now),
+                    unsubscribed_at: Some(now),
+                })
+                .expect("unsubscribe");
+        });
+
+        let subscriber = store
+            .subscriber_get("reader@example.com")
+            .expect("read")
+            .expect("subscriber survived reopen");
+        assert_eq!(
+            subscriber.state,
+            SubscriberState::Unsubscribed,
+            "a reopen must not resurrect an unsubscribed reader as Active"
+        );
+        assert!(subscriber.unsubscribed_at.is_some());
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn an_acknowledged_confirm_survives_reopen() {
+        let now = OffsetDateTime::now_utc();
+        let (store, _dir) = write_then_reopen(|store| {
+            store
+                .subscriber_put(&Subscriber {
+                    email: "confirmed@example.com".to_owned(),
+                    state: SubscriberState::Active,
+                    created_at: now,
+                    confirmed_at: Some(now),
+                    unsubscribed_at: None,
+                })
+                .expect("confirm");
+        });
+
+        let subscriber = store
+            .subscriber_get("confirmed@example.com")
+            .expect("read")
+            .expect("subscriber survived reopen");
+        assert_eq!(subscriber.state, SubscriberState::Active);
+        assert!(subscriber.confirmed_at.is_some());
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn an_acknowledged_send_survives_reopen() {
+        // `POST /send` hands the send id back to the operator, so the
+        // record it names must still exist after a restart.
+        let now = OffsetDateTime::now_utc();
+        let send_id = SendId::generate();
+        let (store, _dir) = write_then_reopen(|store| {
+            store
+                .send_put(&Send {
+                    id: send_id,
+                    subject: "Issue 1".to_owned(),
+                    body_html: "<p>hello</p>".to_owned(),
+                    sent_at: now,
+                })
+                .expect("send_put");
+        });
+
+        let send = store
+            .send_get(&send_id)
+            .expect("read")
+            .expect("send survived reopen");
+        assert_eq!(send.subject, "Issue 1");
     }
 }
 

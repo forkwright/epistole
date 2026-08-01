@@ -136,16 +136,9 @@ pub(crate) async fn post(
         body_html: html_out,
         sent_at: now,
     };
-    let serialized = serde_json::to_vec(&send_rec).map_err(|e| Error::Store {
-        reason: format!("encode send: {e}"),
-    })?;
-    state
-        .store
-        .sends
-        .insert(send_id.to_string().as_bytes(), serialized)
-        .map_err(|e| Error::Store {
-            reason: format!("sends partition write: {e}"),
-        })?;
+    // The reply hands `send_id` back to the operator, so the record is
+    // durable before we return it — `send_put` fsyncs the journal.
+    state.store.send_put(&send_rec)?;
 
     // Phase 2 (forkwright/epistole#1) walks the subscribers partition,
     // mints per-recipient unsubscribe tokens, sends via lettre, records
