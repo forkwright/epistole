@@ -66,15 +66,47 @@ sudoedit /etc/epistole/epistole.toml
 ```
 
 Fill in:
-- `bind = "127.0.0.1:9090"` (Caddy reverse-proxies; no public bind)
+- `bind = "127.0.0.1:9090"` (the reverse proxy fronts this; no public bind)
 - `data_dir = "/var/lib/epistole/data"`
 - `base_url = "https://letters.<your-domain>"`
 - `[brand]` block with `name = "<Your Brand Name>"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
-- `[smtp]` block with the Postmark/Mailgun credentials
-- `token_secret = "<TOKEN_SECRET from step 4>"`
-- `send_auth_token = "<SEND_AUTH_TOKEN from step 4>"`
+- `[smtp]` block with the relay host, port, and username
 
-Lock it down:
+Leave the three secrets as environment references — do not paste the values
+from step 4 into the toml:
+
+```toml
+token_secret = "${TOKEN_SECRET}"
+send_auth_token = "${SEND_AUTH_TOKEN}"
+
+[smtp]
+password = "${SMTP_PASSWORD}"
+```
+
+`Config::load` resolves each `${NAME}` from the process environment at
+startup, then rejects placeholder or short values. Pasting a literal such as
+`<TOKEN_SECRET from step 4>` is refused by the blocked-substring check in
+`src/config.rs` and the service will not boot.
+
+Keep the root keys (`bind`, `data_dir`, `base_url`, `token_secret`,
+`send_auth_token`) **above** the `[brand]` and `[smtp]` headers. TOML assigns
+every key after a table header to that table, so a root key placed below
+`[smtp]` loads as `smtp.<key>` and fails with `unknown field`.
+
+Now write the env file the unit reads, using the values from step 4:
+
+```bash
+sudo install -m 0600 -o root -g root /dev/null /etc/epistole.env
+sudoedit /etc/epistole.env
+```
+
+```ini
+TOKEN_SECRET=<TOKEN_SECRET from step 4>
+SEND_AUTH_TOKEN=<SEND_AUTH_TOKEN from step 4>
+SMTP_PASSWORD=<relay password / API token>
+```
+
+Lock the config down:
 
 ```bash
 sudo chown root:epistole /etc/epistole/epistole.toml
@@ -133,7 +165,7 @@ Open NPM at `https://<reverse-proxy-host>` → **Hosts → Proxy Hosts → Add P
 | Domain Names | `letters.<your-domain>` |
 | Scheme | `http` |
 | Forward Hostname | `127.0.0.1` (epistole binds to loopback on the same box as NPM, OR the LAN IP of <deploy-host> if the reverse proxy is on a different host) |
-| Forward Port | `9091` |
+| Forward Port | `9090` |
 | Cache Assets | OFF |
 | Block Common Exploits | **ON** |
 | Websockets Support | OFF (epistole is plain HTTP) |
@@ -337,16 +369,21 @@ This complements the SPF + DKIM records the relay provider gave you. `p=quaranti
 curl -sf -X POST https://letters.<your-domain>/subscribe \
   -d email=test@example.com
 
-# Look for the confirm URL in the journal - Phase 0 logs it instead of mailing
+# Confirm the mint was recorded. The line carries an HMAC of the address
+# and deliberately omits the token, so the URL is NOT recoverable here.
 journalctl -u epistole.service | grep "confirm link minted"
-
-# Open the confirm URL in a browser. Should see the "Subscribed." page.
-
-# Verify subscriber state
-fjall-tools dump /var/lib/epistole/data/subscribers/ | jq
 ```
 
-If Phase 2 (forkwright/epistole#1) has landed, the confirm email will arrive in the test inbox via the SMTP relay.
+The confirm URL is not obtainable from a Phase 0 deployment: nothing mails it
+and nothing logs it, and there is no minting subcommand. Until Phase 2
+(forkwright/epistole#1) lands and the confirm email is delivered through the
+SMTP relay, the smoke test ends at the mint log line — a subscribe that
+returns 200 and logs `confirm link minted` is the full Phase 0 signal.
+
+Subscriber state is not inspectable from the filesystem either. fjall stores
+keyspaces by numeric id under `<data_dir>/keyspaces/<id>/`, not by name, so
+no `subscribers/` directory exists to dump. Read subscriber state through
+the service, not the data directory.
 
 ## Step 11 - Cut over <your-domain>'s contact form
 
