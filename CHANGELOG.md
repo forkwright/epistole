@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/forkwright/epistole/compare/v0.1.1...v0.1.2) (2026-07-31)
+
+
+### Bug Fixes
+
+* burn down the lint baseline — SendId newtype, release attestations, resource limits ([#78](https://github.com/forkwright/epistole/issues/78)) ([804073c](https://github.com/forkwright/epistole/commit/804073c09dedafd5fe6876a2ddc01db07e6a92c2)), closes [#52](https://github.com/forkwright/epistole/issues/52)
+
 ## [0.1.1](https://github.com/forkwright/epistole/compare/v0.1.0...v0.1.1) (2026-07-29)
 
 

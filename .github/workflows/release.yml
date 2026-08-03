@@ -9,7 +9,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  attestations: write
   contents: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,3 +77,31 @@ jobs:
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@57aae528053a48a3f6235f2d9461b05fbcb7366d # v0
+        with:
+          artifact-name: ${{ matrix.artifact }}.cdx.json
+          format: cyclonedx-json
+          output-file: ${{ matrix.artifact }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload SBOM
+        run: |
+          gh release upload "${GITHUB_REF#refs/tags/}" \
+            ${{ matrix.artifact }}.cdx.json \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest binary provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ matrix.artifact }}
+
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest-sbom@5026d3663739160db546203eeaffa6aa1c51a4d6 # v1
+        with:
+          subject-path: ${{ matrix.artifact }}
+          sbom-path: ${{ matrix.artifact }}.cdx.json

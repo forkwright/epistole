@@ -6,36 +6,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use epistole::{
-    Config, Store,
-    config::{Brand, Smtp},
-    router,
-};
+use epistole::{Store, router};
 use http_body_util::BodyExt;
-use secrecy::SecretString;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-fn test_config(data_dir: std::path::PathBuf) -> Config {
-    Config {
-        bind: "127.0.0.1:0".to_owned(),
-        data_dir,
-        base_url: "https://letters.example.com".to_owned(),
-        brand: Brand {
-            name: "Test Brand".to_owned(),
-            from_address: "letters@example.com".to_owned(),
-            reply_to: None,
-        },
-        smtp: Smtp {
-            host: "127.0.0.1".to_owned(),
-            port: 0,
-            username: "user".to_owned(),
-            password: SecretString::from("pass".to_owned()),
-        },
-        token_secret: SecretString::from("test-secret-32-bytes-padding-aaaa".to_owned()),
-        send_auth_token: SecretString::from("operator-bearer-test".to_owned()),
-    }
-}
+mod common;
+use common::test_config;
 
 #[tokio::test]
 #[expect(

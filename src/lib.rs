@@ -9,6 +9,7 @@
 pub mod config;
 pub mod error;
 pub(crate) mod handlers;
+pub mod send_id;
 pub mod store;
 pub(crate) mod templates;
 pub mod token;
@@ -31,6 +32,7 @@ use tower_http::trace::TraceLayer;
 
 pub use config::Config;
 pub use error::{Error, Result};
+pub use send_id::SendId;
 pub use store::Store;
 
 /// Shared application state passed to every handler.

@@ -1,6 +1,6 @@
 [package]
 name = "epistole"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/forkwright/epistole"
@@ -29,7 +29,8 @@ ammonia = "4"
 
 # Lexicographic, monotonic, time-prefixed identifier for Send records.
 # Replaces wall-clock-nanosecond send_ids that collided on same-ns sends.
-ulid = "3"
+# "serde" feature backs SendId's (de)serialization (src/send_id.rs).
+ulid = { version = "3", features = ["serde"] }
 
 # HTML rendering (compile-time templates, type-safe, zero runtime deps)
 maud = { version = "0.27", features = ["axum"] }

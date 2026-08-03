@@ -4,36 +4,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use epistole::{
-    Config, Store,
-    config::{Brand, Smtp},
-    router,
-};
+use epistole::{Store, router};
 use http_body_util::BodyExt;
-use secrecy::SecretString;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-fn test_config(data_dir: std::path::PathBuf) -> Config {
-    Config {
-        bind: "127.0.0.1:0".to_owned(),
-        data_dir,
-        base_url: "https://letters.example.com".to_owned(),
-        brand: Brand {
-            name: "Test Brand".to_owned(),
-            from_address: "letters@example.com".to_owned(),
-            reply_to: None,
-        },
-        smtp: Smtp {
-            host: "127.0.0.1".to_owned(),
-            port: 0,
-            username: "user".to_owned(),
-            password: SecretString::from("pass".to_owned()),
-        },
-        token_secret: SecretString::from("test-secret-32-bytes-padding-aaaa".to_owned()),
-        send_auth_token: SecretString::from("operator-bearer-test".to_owned()),
-    }
-}
+mod common;
+use common::test_config;
 
 #[tokio::test]
 #[expect(
@@ -93,6 +70,13 @@ async fn archive_lists_sends_and_links_to_detail_pages() {
     for send_id in send_ids {
         assert!(html.contains(&format!("/archive/{send_id}")));
     }
+    // An index below the cap is the complete history, so it must not
+    // claim to be truncated. Pairs with
+    // `archive_index_caps_the_page_and_reports_the_truncation`.
+    assert!(
+        !html.contains("Showing the most recent"),
+        "an untruncated index must not report truncation"
+    );
 }
 
 #[tokio::test]
@@ -173,4 +157,84 @@ async fn archive_detail_returns_404_for_missing_send() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn archive_index_caps_the_page_and_reports_the_truncation() {
+    // Issue #44: GET /archive materialized every send on every request.
+    // The index now reads at most a fixed number of the newest sends, so
+    // this asserts both halves: the oldest sends fall off the page, and
+    // the page says it is showing only the most recent ones.
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+
+    // Two past the 100-record cap, so the two oldest must be excluded.
+    // Send ids are ULIDs, so insertion order is also archive order.
+    for i in 0..102 {
+        let payload = format!("{{\"subject\":\"Note {i:03}\",\"markdown\":\"# body\"}}");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer operator-bearer-test")
+                    .body(Body::from(payload))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/archive")
+                .header("x-forwarded-for", "203.0.113.75")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.expect("body").to_bytes();
+    let html = std::str::from_utf8(&body).expect("utf8");
+
+    // The two oldest are past the cap and must not be rendered. Without
+    // the cap every one of the 102 appears, so these two assertions are
+    // what fail if the bound is removed.
+    assert!(
+        !html.contains("Note 000"),
+        "oldest send past the cap must not be rendered"
+    );
+    assert!(
+        !html.contains("Note 001"),
+        "second-oldest send past the cap must not be rendered"
+    );
+
+    // The newest, and the oldest that still fits, are both present.
+    assert!(html.contains("Note 101"), "newest send must be rendered");
+    assert!(
+        html.contains("Note 002"),
+        "last send inside the cap must be rendered"
+    );
+
+    // Exactly the cap is rendered.
+    assert_eq!(
+        html.matches("<li>").count(),
+        100,
+        "archive index must render exactly the capped number of sends"
+    );
+
+    assert!(
+        html.contains("Showing the most recent 100 notes."),
+        "a truncated index must say it is truncated, got: {html}"
+    );
 }

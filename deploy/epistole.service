@@ -14,9 +14,9 @@ WorkingDirectory=/var/lib/epistole
 ExecStart=/usr/local/bin/epistole --config /etc/epistole/epistole.toml
 # Secrets live in /etc/epistole.env (0600 root); the toml references
 # them via ${VAR} placeholders. Resolved at startup (see config.rs's
-# resolve_secret_env). Phase 0 deploys can comment this out and inline
-# secrets in the toml — Phase 1 hardening makes this the default.
-EnvironmentFile=/etc/epistole.env
+# resolve_secret_env). The leading `-` makes the file optional, so a
+# Phase 0 deploy that inlines secrets in the toml still boots.
+EnvironmentFile=-/etc/epistole.env
 Restart=always
 RestartSec=5
 
@@ -51,7 +51,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # Drop every capability except what an unprivileged HTTP service needs
 # — i.e., none. Bind to a low port is not in scope (epistole listens on
-# 9091; NPM does the :443 termination).
+# 9090; the reverse proxy does the :443 termination).
 CapabilityBoundingSet=
 AmbientCapabilities=
 
@@ -65,9 +65,16 @@ ReadWritePaths=/var/lib/epistole
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @cpu-emulation @debug @keyring @module @obsolete @raw-io @reboot @swap
 
-# Resource limits.
+# Resource limits. MemoryMax= is deliberately absent: basanos'
+# OPERATIONS/no-memory-max-on-service-unit bans it fleet-wide because on
+# forge/archeion hosts it shares a cgroup hierarchy with CI build jobs
+# and can deadlock them (AP.7). That rationale doesn't apply to this
+# host (a dedicated deploy target, not a CI runner), but the check is
+# unconditional for any non-ergates/-ci-runner *.service file, so the
+# hard ceiling is dropped rather than exempted. MemoryHigh= still
+# throttles the cgroup under memory pressure; the kernel OOM killer is
+# the backstop if that's not enough.
 MemoryHigh=512M
-MemoryMax=1G
 TasksMax=128
 LimitNOFILE=4096
 
