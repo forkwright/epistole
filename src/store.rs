@@ -416,6 +416,32 @@ fn guard_against_nested_keyspace(path: &Path) -> Result<()> {
 ///      (recursively if needed) and canonicalize the result. If it's
 ///      a regular not-yet-existing file, append literally.
 fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    canonicalize_bounded(path, 0)
+}
+
+/// Maximum broken-symlink hops resolved before giving up.
+///
+/// WHY: `std::fs::canonicalize` stops a symlink loop itself with `ELOOP`,
+/// but the broken-symlink fallback below re-enters this function with the
+/// link's target and so has no such backstop. `a -> b`, `b -> a` with a
+/// missing target recurses until the stack is exhausted, which aborts the
+/// process inside `Store::open` before any error can be reported. Linux
+/// caps a resolution chain at 40 links; matching that bound rejects the
+/// same paths the kernel would while keeping every legitimate chain.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+fn canonicalize_bounded(path: &Path, hops: usize) -> std::io::Result<std::path::PathBuf> {
+    if hops > MAX_SYMLINK_HOPS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TooManyLinks,
+            format!(
+                "symlink chain at {} exceeded {MAX_SYMLINK_HOPS} hops — the path is \
+                 circular or too deeply linked",
+                path.display()
+            ),
+        ));
+    }
+
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -460,9 +486,9 @@ fn canonicalize_with_nonexistent(path: &Path) -> std::io::Result<std::path::Path
                 existing.parent().map(|p| p.join(&target)).unwrap_or(target)
             };
             // Recurse: the target itself may be a chain of symlinks
-            // or may not exist yet. The `canonicalize_with_nonexistent`
-            // call resolves what it can and returns the rest literally.
-            canonicalize_with_nonexistent(&resolved_target)?
+            // or may not exist yet. The `canonicalize_bounded` call
+            // resolves what it can and returns the rest literally.
+            canonicalize_bounded(&resolved_target, hops + 1)?
         }
     };
     for component in tail.iter().rev() {
@@ -760,5 +786,54 @@ mod store_guard_tests {
             msg.contains("partitions"),
             "error should reference partitions, got: {msg}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn rejects_circular_symlink_instead_of_overflowing_the_stack() {
+        // #43: the broken-symlink fallback in canonicalize_with_nonexistent
+        // re-entered itself with the link target and carried no bound, so
+        // `a -> b`, `b -> a` recursed until the stack was exhausted and the
+        // process aborted inside Store::open. Reaching this assertion at all
+        // means the recursion terminated.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::os::unix::fs::symlink(&b, &a).expect("symlink a -> b");
+        std::os::unix::fs::symlink(&a, &b).expect("symlink b -> a");
+
+        let result = Store::open(&a);
+
+        assert!(
+            result.is_err(),
+            "a circular symlink chain must return an error, not abort the process"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn accepts_a_symlink_chain_shorter_than_the_hop_bound() {
+        // The bound must reject cycles without rejecting the legitimate
+        // chains a deploy may have, so prove one still resolves.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let real = tmp.path().join("real-data");
+        std::fs::create_dir(&real).expect("create real dir");
+
+        let mut previous = real.clone();
+        for hop in 0..8 {
+            let link = tmp.path().join(format!("hop-{hop}"));
+            std::os::unix::fs::symlink(&previous, &link).expect("symlink hop");
+            previous = link;
+        }
+
+        guard_against_nested_keyspace(&previous).expect("a bounded chain must pass the guard");
     }
 }
