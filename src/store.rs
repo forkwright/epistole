@@ -142,6 +142,19 @@ pub struct Store {
     deliveries: Keyspace,
 }
 
+/// Decode one `sends` record from its fjall guard.
+///
+/// Shared by [`Store::iter_sends`] and [`Store::recent_sends`] so both
+/// report identical error text for the same failure.
+fn decode_send(guard: fjall::Guard) -> Result<Send> {
+    let v = guard.value().map_err(|e| Error::Store {
+        reason: format!("sends iter: {e}"),
+    })?;
+    serde_json::from_slice::<Send>(&v).map_err(|e| Error::Store {
+        reason: format!("sends decode: {e}"),
+    })
+}
+
 impl Store {
     /// Open the keyspace at `path`, creating partitions if absent.
     ///
@@ -216,22 +229,41 @@ impl Store {
         }
     }
 
-    /// Iterate every record in the `sends` partition. Used by tests +
-    /// (Phase 2) the archive page renderer.
+    /// Iterate every record in the `sends` partition, oldest first.
+    ///
+    /// The iterator is lazy, so it costs one record at a time. Callers
+    /// that render a response must still bound how many they pull —
+    /// prefer [`Store::recent_sends`], which carries the bound.
     ///
     /// # Errors
     ///
     /// Each item resolves to [`Error::Store`] on fjall read or decode
     /// failure.
     pub fn iter_sends(&self) -> Result<impl Iterator<Item = Result<Send>>> {
-        Ok(self.sends.iter().map(|guard| {
-            let v = guard.value().map_err(|e| Error::Store {
-                reason: format!("sends iter: {e}"),
-            })?;
-            serde_json::from_slice::<Send>(&v).map_err(|e| Error::Store {
-                reason: format!("sends decode: {e}"),
-            })
-        }))
+        Ok(self.sends.iter().map(decode_send))
+    }
+
+    /// Read at most `limit` of the most recent sends, newest first.
+    ///
+    /// WHY: send ids are ULIDs, so the partition is already ordered
+    /// oldest-first by key. Iterating in reverse yields newest-first
+    /// without sorting, and stopping at `limit` bounds both the decode
+    /// work and the peak memory one call costs — the archive index must
+    /// not let history size alone decide either.
+    ///
+    /// Requesting `limit + 1` and checking for the extra record is how a
+    /// caller detects that more history exists without a second query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall read or decode failure.
+    pub fn recent_sends(&self, limit: usize) -> Result<Vec<Send>> {
+        self.sends
+            .iter()
+            .rev()
+            .take(limit)
+            .map(decode_send)
+            .collect()
     }
 
     /// Look up one send by its stable send id.
