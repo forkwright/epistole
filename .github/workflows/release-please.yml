@@ -69,7 +69,7 @@ jobs:
           subject-path: ${{ steps.source.outputs.archive }}
 
       - name: Attest CycloneDX SBOM
-        uses: actions/attest-sbom@5026d3663739160db546203eeaffa6aa1c51a4d6 # v1
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: ${{ steps.source.outputs.archive }}
           sbom-path: ${{ steps.source.outputs.archive }}.cdx.json
