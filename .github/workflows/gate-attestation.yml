@@ -1,53 +1,96 @@
+# WHY(kanon#2522): replaces epistole's standalone gate-attestation.yml
+# (author-keyed trailer waiver, no full-build fallback, no ai-attribution
+# check, no doc-only exemption) with the kanon-designed hybrid gate. The
+# standalone waiver keyed off `github.actor` -- whoever caused the CURRENT
+# run -- which flips to a maintainer login on "Re-run failed jobs" and
+# re-arms the trailer check on a bot PR that already passed. A separate
+# unmerged branch in this repo (fix/gate-bypass-author-shaped) proposed
+# widening that same waiver with
+# `startsWith(github.head_ref, 'release-please')`; head_ref is the PR
+# author's freely-chosen branch name, so any contributor could have named a
+# branch `release-please-*` and skipped the gate entirely -- the same
+# spoofable-waiver class as kanon#2628. The reusable has no actor/branch-name
+# waiver at all: an untrailered PR always routes to full-gate-build and must
+# actually compile, so there is nothing left to spoof.
+#
+# All gate logic lives in forkwright/.github/.github/workflows/hybrid-gate.yml
+# -- this file only supplies epistole's own commands, flags, and the two
+# policy toggles.
+#
+# WHY hosted in forkwright/.github, not forkwright/kanon: GitHub cannot
+# resolve a workflow_call reference into a private repo owned by a personal
+# account for other-repo callers -- adoption attempts pointed at kanon fail
+# to even schedule the workflow (no run appears at all, not even a failed
+# one; proven across aletheia#6438, koinon#15, heurema#9, sphragis#13). The
+# public `.github` host already serves 8 repos successfully, including this
+# repo's own prior gate-attestation.yml.
+#
+# WHY these with: values (cite): .github/workflows/ci.yml (fmt/check/clippy/
+# nextest jobs, all GH-hosted ubuntu-latest with --jobs 8 caps already) +
+# .kanon-ci.toml (forge pipeline, same commands). epistole is a single
+# [package], not a [workspace] -- no --workspace flag on any stage, matching
+# both ci.yml and .kanon-ci.toml exactly.
+#
+# WHY doctest_cmd is empty: neither ci.yml nor .kanon-ci.toml runs a separate
+# doctest stage today (nextest does not execute doctests) -- left at the
+# fleet default (skip) rather than inventing coverage that doesn't exist yet.
+#
+# WHY system_packages is empty: every dependency in Cargo.toml is pure Rust
+# (lettre uses the rustls/ring TLS backend, not native-tls/openssl; fjall,
+# ammonia, ulid, maud, hmac/sha2 have no C-binding surface) -- verified by
+# direct read, no apt-get lines in ci.yml either.
+#
+# WHY needs_fleet_repo_token is false: Cargo.toml carries no
+# `git = "https://github.com/forkwright/..."` dependency (grepped directly)
+# -- every dependency resolves from crates.io. ci.yml's separate kanon-lint
+# job uses FLEET_REPO_TOKEN to install the kanon CLI for linting, which is
+# unrelated to a Cargo.toml git dependency and is not carried into this
+# file (kanon-lint stays in ci.yml, untouched by this migration).
+#
+# NOTE(double-build-cost, mirrors koinon/sphragis): ci.yml already runs
+# fmt/check/clippy/nextest unconditionally on every push+PR to main. Once
+# full-gate-build also runs them for trailer-less PRs, those PRs pay for the
+# build twice in one run. ci.yml's jobs are not in required-status-checks
+# (only the gate context is), so this is CI-minutes duplication, not a
+# required-check duplication -- leaving ci.yml as-is per fleet precedent.
 name: Gate Attestation
 
 on:
   pull_request:
     branches: [main]
+  # WHY a push trigger and not just pull_request: a squash merge does not
+  # carry the source commits' trailers, so no commit on main has a
+  # Gate-Passed trailer -- check-trailer finds none and routes to
+  # full-gate-build, which is the job that actually compiles the workspace.
+  # Without this nothing ever builds main, and the first PR to inherit a
+  # merged break is what discovers it (forkwright/theatron#235).
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# WHY no concurrency: block here: hybrid-gate.yml itself already declares
+# `concurrency: group: ${{ github.workflow }}-${{ github.ref }}` and its own
+# comment states callers must NOT also set a concurrency group with that
+# same key, or the shared group self-cancels. epistole's PRIOR file set this
+# exact key -- dropped here, not carried forward, for that reason.
 
 jobs:
-  gate-attestation:
-    name: gate-attestation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Pass trusted automation PRs
-        if: ${{ github.actor == 'dependabot[bot]' || github.actor == 'release-please[bot]' || github.actor == 'github-actions[bot]' }}
-        run: echo "Gate attestation waived for trusted automation actor."
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'release-please[bot]' && github.actor != 'github-actions[bot]' }}
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify Gate-Passed trailer
-        if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'release-please[bot]' && github.actor != 'github-actions[bot]' }}
-        run: |
-          commits=$(git log --format="%H" "origin/${{ github.base_ref }}..HEAD")
-          if [ -z "$commits" ]; then
-            echo "ERROR: No commits found in PR"
-            exit 1
-          fi
-
-          found=false
-          for sha in $commits; do
-            body=$(git log -1 --format="%b" "$sha")
-            if echo "$body" | grep -q "^Gate-Passed:"; then
-              version=$(echo "$body" | grep "^Gate-Passed:" | head -1)
-              echo "Found gate attestation: $version"
-              found=true
-              break
-            fi
-          done
-
-          if [ "$found" = false ]; then
-            echo "ERROR: No Gate-Passed trailer found in any PR commit."
-            echo "Run the local gate and commit with the trailer."
-            exit 1
-          fi
+  gate:
+    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@main
+    with:
+      # WHY defaults kept as-is: epistole has its own rust-toolchain.toml
+      # (channel = "stable") -- auto-detect applies, no rust_toolchain
+      # override needed.
+      fmt_cmd: "cargo fmt --all -- --check"
+      check_cmd: "cargo check --all-targets --jobs 8"
+      clippy_cmd: "cargo clippy --all-targets --jobs 8 -- -D warnings"
+      nextest_cmd: "cargo nextest run --build-jobs 8 --test-threads 8"
+      doctest_cmd: ""
+      system_packages: ""
+      needs_fleet_repo_token: false
+      rust_cache_key: "gate-attestation"
+      ai_attribution_check: true
+      docs_only_exemption: true
+    secrets: inherit
