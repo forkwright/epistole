@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.3](https://github.com/forkwright/epistole/compare/v0.1.2...v0.1.3) (2026-08-04)
+
+
+### Bug Fixes
+
+* bound the archive index and send subject, make send ids monotonic ([#82](https://github.com/forkwright/epistole/issues/82)) ([25b1464](https://github.com/forkwright/epistole/commit/25b14644dac7b12c139e37a1ad795911316e7382)), closes [#44](https://github.com/forkwright/epistole/issues/44)
+* **deploy:** make the deploy bundle one executable contract ([#83](https://github.com/forkwright/epistole/issues/83)) ([801f0b2](https://github.com/forkwright/epistole/commit/801f0b2385e86b3b04bba109588330e8df820aa0)), closes [#64](https://github.com/forkwright/epistole/issues/64)
+* **store:** bound broken-symlink recursion in path canonicalization ([#81](https://github.com/forkwright/epistole/issues/81)) ([d98ffc1](https://github.com/forkwright/epistole/commit/d98ffc1fd3345779091e1e4780ddd7d17cd21d98)), closes [#43](https://github.com/forkwright/epistole/issues/43)
+* **store:** persist consent transitions before acknowledging them ([#80](https://github.com/forkwright/epistole/issues/80)) ([ad078aa](https://github.com/forkwright/epistole/commit/ad078aac27c68dc631c075c66c5a6476e1c0ebb0)), closes [#69](https://github.com/forkwright/epistole/issues/69)
+
 ## [0.1.2](https://github.com/forkwright/epistole/compare/v0.1.1...v0.1.2) (2026-07-31)
 
 
