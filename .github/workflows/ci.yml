@@ -45,7 +45,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
       - name: Check crate
         run: cargo check --all-targets --jobs 8
 
@@ -60,7 +60,7 @@ jobs:
         with:
           components: clippy
           cache: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
       - name: Lint crate
         run: cargo clippy --all-targets --jobs 8 -- -D warnings
 
@@ -74,7 +74,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           cache: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
       - name: Install cargo-nextest
         run: cargo install cargo-nextest --locked --version 0.9.136
       - name: Run nextest
@@ -114,7 +114,7 @@ jobs:
         with:
           cache: false
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
         if: env.FLEET_REPO_TOKEN != ''
         with:
           workspaces: kanon
