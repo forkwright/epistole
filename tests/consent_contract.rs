@@ -413,6 +413,10 @@ async fn fresh_confirm_token_minted_after_unsubscribe_reactivates_the_subscriber
     clippy::expect_used,
     reason = "test scaffolding - panic on fail is the desired signal"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario test — splitting hides the linear walk"
+)]
 async fn stale_unsubscribe_token_cannot_cancel_a_later_opt_in() {
     // The mirror of the classic bug: an unsubscribe token captured
     // during an EARLIER Active period must not be able to cancel a

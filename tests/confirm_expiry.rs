@@ -1,5 +1,5 @@
 //! Expiry handling on the `POST /confirm` surface (the commit path;
-//! `GET /confirm` never writes — see tests/consent_contract.rs).
+//! `GET /confirm` never writes — see `tests/consent_contract.rs`).
 
 use std::sync::Arc;
 
