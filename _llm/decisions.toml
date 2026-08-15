@@ -7,6 +7,8 @@ source_docs = [
   "DEPLOY.md",
   "src/lib.rs",
   "src/token.rs",
+  "src/handlers/confirm.rs",
+  "src/handlers/unsubscribe.rs",
 ]
 
 [decisions]
@@ -33,8 +35,16 @@ id = "D-token-links"
 title = "Use signed time-limited confirm and unsubscribe tokens"
 status = "accepted"
 context = "Email flows need one-click confirm and unsubscribe without login accounts."
-decision = "Mint HMAC-signed tokens scoped by kind and email."
-consequences = "Confirm and unsubscribe links are stateless to verify but still bound to stored subscriber state."
+decision = "Mint HMAC-signed tokens scoped by kind, email, expiry, and the subscriber's consent generation at mint time."
+consequences = "Confirm and unsubscribe links are stateless to verify but still bound to stored subscriber state; a token minted before a later consent transition is refused, one minted after is honored."
+
+[[decision]]
+id = "D-safe-get-consent-tokens"
+title = "GET on /confirm and /unsubscribe never writes"
+status = "accepted"
+context = "A GET request is a safe method automated clients (mail-client link prefetchers, security scanners) may fetch without human intent; a GET that mutates consent state gets silently triggered by that traffic (RFC 9110 §9.2.1)."
+decision = "GET previews the outcome of a token without touching the store. The visitor's own click submits a same-origin POST — from the interstitial's form for a manual action, or directly from a mail client for the RFC 8058 List-Unsubscribe-Post one-click endpoint — which is the only path that commits."
+consequences = "A prefetch or scanner fetching an emailed link can no longer confirm or unsubscribe an address on its own. The manual and one-click unsubscribe paths stay separate routes so a human's browser and a mail client's automated POST can never be confused for each other."
 
 [[decision]]
 id = "D-smtp-relay"

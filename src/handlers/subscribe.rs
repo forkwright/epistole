@@ -45,8 +45,9 @@ fn strict_email_options() -> Options {
 ///
 /// # Errors
 ///
-/// Returns [`Error::BadRequest`] on a malformed or oversized email, or
-/// [`Error::Config`] when token signing cannot be initialized.
+/// Returns [`Error::BadRequest`] on a malformed or oversized email,
+/// [`Error::Store`] on a store read failure while minting the confirm
+/// token, or [`Error::Config`] when token signing cannot be initialized.
 pub(crate) async fn post(
     State(state): State<AppState>,
     Form(body): Form<Body>,
@@ -82,7 +83,7 @@ pub(crate) async fn post(
 
     let _signed = mint_confirm_token(&state, &email_norm, now)?;
 
-    // Phase 2 (forkwright/epistole#1) wires lettre — until then, the
+    // Phase 2 (forkwright/epistole#3) wires lettre — until then, the
     // operator pulls the confirm URL by signing it themselves with
     // `epistole-mint-token` (or a manual sign() call). The log line
     // intentionally does NOT include the email or the confirm URL:
@@ -122,15 +123,31 @@ pub(crate) async fn post(
 /// stateless confirm token. The caller owns whether that token should be
 /// mailed; Phase 0 only logs the HMAC'd address for operator correlation.
 ///
-/// No subscriber row is written here. That is the security boundary for
-/// forkwright/epistole#5: unconfirmed addresses never become durable
-/// fjall state.
+/// No subscriber row is written here — the lookup below is a read. That
+/// read is what keeps the security boundary for forkwright/epistole#5
+/// (unconfirmed addresses never become durable fjall state) compatible
+/// with forkwright/epistole#65's consent generation: the token is minted
+/// against whatever generation the address is CURRENTLY at (0 for an
+/// address with no row yet), so a re-subscribe issued after an
+/// unsubscribe reads the post-unsubscribe generation and produces a
+/// token confirm.rs will accept, while a token captured before that
+/// unsubscribe still carries the stale value and stays refused.
+///
+/// # Errors
+///
+/// Returns [`Error::Store`] on a store read failure, or [`Error::Config`]
+/// when token signing cannot be initialized.
 fn mint_confirm_token(state: &AppState, email_norm: &str, now: OffsetDateTime) -> Result<String> {
+    let generation = state
+        .store
+        .subscriber_get(email_norm)?
+        .map_or(0, |s| s.generation);
     let exp_unix = now.unix_timestamp() + CONFIRM_TTL_SECS;
     let token = crate::token::Token::new(
         crate::token::TokenKind::Confirm,
         email_norm.to_owned(),
         exp_unix,
+        generation,
     );
     crate::token::sign(&token, state.config.token_secret.expose_secret().as_bytes())
 }

@@ -14,6 +14,31 @@ use tower::ServiceExt;
 mod common;
 use common::test_config;
 
+/// A `POST` request with an `application/x-www-form-urlencoded` body —
+/// what the confirm/unsubscribe interstitial's own form submits, and
+/// what `/subscribe` has always taken.
+///
+/// `xff` is required, not optional: `/confirm` and `/unsubscribe` sit
+/// inside `public_routes`, which carries the per-IP `GovernorLayer`. The
+/// test harness calls the router directly via `.oneshot()` rather than
+/// through `into_make_service_with_connect_info`, so with no XFF header
+/// and no injected `ConnectInfo`, `TrustedProxyExtractor` cannot derive
+/// a rate-limit key and the request 500s before reaching the handler —
+/// see `src/main.rs`'s `into_make_service_with_connect_info` comment.
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn post_form(uri: &str, xff: &str, form_body: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-for", xff)
+        .body(Body::from(form_body))
+        .expect("req")
+}
+
 #[tokio::test]
 #[expect(
     clippy::expect_used,
@@ -72,18 +97,21 @@ async fn subscribe_then_confirm_round_trip() {
     assert!(sub.is_none());
 
     // Mint a confirm token directly (production path mints inside the
-    // handler and mails it; we replay the same code).
+    // handler and mails it; we replay the same code). Generation 0
+    // matches mint_confirm_token's own "no row yet" baseline.
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = epistole::token::Token::new(
         epistole::token::TokenKind::Confirm,
         "alice@example.com".to_owned(),
         now + 3600,
+        0,
     );
     let signed =
         epistole::token::sign(&tok, cfg.token_secret.expose_secret().as_bytes()).expect("sign");
 
-    // GET /confirm?token=...
+    // GET /confirm?token=... previews only — no mutation.
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/confirm?token={signed}"))
@@ -94,8 +122,34 @@ async fn subscribe_then_confirm_round_trip() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.expect("body").to_bytes();
+    let body_str = std::str::from_utf8(&body).expect("utf8");
+    assert!(
+        body_str.contains("Confirm your subscription?"),
+        "GET must render the interstitial, not the confirmed page: {body_str}"
+    );
+    assert!(
+        store
+            .subscriber_get("alice@example.com")
+            .expect("read")
+            .is_none(),
+        "GET /confirm must not have written a subscriber row"
+    );
 
-    // Subscriber now exists as Active; /confirm is the first durable write.
+    // POST /confirm — the interstitial's own form submit — is what
+    // actually commits.
+    let resp = app
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.7",
+            format!("token={signed}"),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Subscriber now exists as Active; POST /confirm is the first
+    // durable write.
     let sub = store
         .subscriber_get("alice@example.com")
         .expect("read")
@@ -258,7 +312,9 @@ async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token()
     // since unsubscribed must NOT bring them back to Active. This test
     // exercises the full state machine: subscribe → confirm → unsubscribe
     // → replay original confirm token → should be invalid-link, NOT
-    // re-active.
+    // re-active. Both tokens are minted at generation 0 (the address's
+    // starting generation), which is exactly what makes the confirm
+    // token stale once unsubscribe bumps to generation 1.
     use secrecy::ExposeSecret;
 
     let tmp = TempDir::new().expect("tempdir");
@@ -287,57 +343,54 @@ async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token()
         epistole::token::TokenKind::Confirm,
         "victim@example.com".to_owned(),
         now + 3600,
+        0,
     );
     let confirm_signed =
         epistole::token::sign(&confirm_tok, cfg.token_secret.expose_secret().as_bytes())
             .expect("sign");
 
-    // 3. Confirm → Active
+    // 3. Confirm → Active (POST — GET no longer mutates).
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/confirm?token={confirm_signed}"))
-                .header("x-forwarded-for", "203.0.113.50")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.50",
+            format!("token={confirm_signed}"),
+        ))
         .await
         .expect("response");
 
-    // 4. Unsubscribe with a fresh unsub token.
+    // 4. Unsubscribe with a fresh unsub token, also generation 0 (the
+    //    row hasn't moved off it — confirm doesn't bump generation).
     let unsub_tok = epistole::token::Token::new(
         epistole::token::TokenKind::Unsubscribe,
         "victim@example.com".to_owned(),
         now + 3600,
+        0,
     );
     let unsub_signed =
         epistole::token::sign(&unsub_tok, cfg.token_secret.expose_secret().as_bytes())
             .expect("sign");
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/unsubscribe?token={unsub_signed}"))
-                .header("x-forwarded-for", "203.0.113.50")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/unsubscribe",
+            "203.0.113.50",
+            format!("token={unsub_signed}"),
+        ))
         .await
         .expect("response");
 
-    // 5. Replay the ORIGINAL confirm token. Without the fix, this
-    //    re-flips the subscriber to Active. With the fix, the handler
-    //    returns the invalid-link page and state stays Unsubscribed.
+    // 5. Replay the ORIGINAL confirm token. Its generation (0) no
+    //    longer matches the row's (1, bumped by the unsubscribe above),
+    //    so it must land on the invalid-link page and NOT re-Activate.
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/confirm?token={confirm_signed}"))
-                .header("x-forwarded-for", "203.0.113.50")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.50",
+            format!("token={confirm_signed}"),
+        ))
         .await
         .expect("response");
 
@@ -394,6 +447,7 @@ async fn token_round_trip_survives_pipe_in_email() {
         epistole::token::TokenKind::Confirm,
         "weird|name@example.com".to_owned(),
         9_999_999_999,
+        0,
     );
     let signed = epistole::token::sign(&tok, secret).expect("sign");
     let verified = epistole::token::verify(&signed, secret, 0).expect("verify");
@@ -459,24 +513,25 @@ async fn stateless_confirm_with_no_subscriber_creates_active_row() {
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
     let app = router(Arc::clone(&store), Arc::clone(&cfg));
 
-    // Mint a valid confirm token for an address that's never been persisted.
+    // Mint a valid confirm token for an address that's never been
+    // persisted — generation 0, the same baseline mint_confirm_token
+    // reads for a row that doesn't exist yet.
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = epistole::token::Token::new(
         epistole::token::TokenKind::Confirm,
         "ghost@example.com".to_owned(),
         now + 3600,
+        0,
     );
     let signed =
         epistole::token::sign(&tok, cfg.token_secret.expose_secret().as_bytes()).expect("sign");
 
     let resp = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/confirm?token={signed}"))
-                .header("x-forwarded-for", "203.0.113.52")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.52",
+            format!("token={signed}"),
+        ))
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -568,6 +623,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
             epistole::token::TokenKind::Confirm,
             "user@example.com".to_owned(),
             now + 3600,
+            0,
         ),
         cfg.token_secret.expose_secret().as_bytes(),
     )
@@ -577,6 +633,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
             epistole::token::TokenKind::Unsubscribe,
             "user@example.com".to_owned(),
             now + 3600,
+            0,
         ),
         cfg.token_secret.expose_secret().as_bytes(),
     )
@@ -600,31 +657,31 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
     // 2. Confirm (creates Active)
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/confirm?token={confirm_signed}"))
-                .header("x-forwarded-for", "203.0.113.60")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.60",
+            format!("token={confirm_signed}"),
+        ))
         .await
         .expect("response");
 
-    // 3. Unsubscribe (Active → Unsubscribed)
+    // 3. Unsubscribe (Active → Unsubscribed, bumps generation to 1)
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/unsubscribe?token={unsub_signed}"))
-                .header("x-forwarded-for", "203.0.113.60")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/unsubscribe",
+            "203.0.113.60",
+            format!("token={unsub_signed}"),
+        ))
         .await
         .expect("response");
 
     // 4. Re-subscribe to the same address. With the patch this leaves
-    //    state Unsubscribed (no flip back to Pending).
+    //    state Unsubscribed (no flip back to Pending). Internally this
+    //    mints a NEW confirm token at generation 1 (the row's current
+    //    value) — a different token from confirm_signed above, and not
+    //    exercised further by this test (that path is covered in
+    //    tests/consent_contract.rs).
     let _ = app
         .clone()
         .oneshot(
@@ -652,17 +709,17 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
         sub_after_resub.state
     );
 
-    // 5. Replay the original confirm URL. State stays Unsubscribed
-    //    (Phase 1.5 confirm-handler fix already enforces this).
+    // 5. Replay the original confirm URL. Its generation (0) no longer
+    //    matches the row's (1, bumped by the unsubscribe in step 3), so
+    //    it stays refused independent of the Pending-flip fix this test
+    //    was originally written against.
     let _ = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/confirm?token={confirm_signed}"))
-                .header("x-forwarded-for", "203.0.113.60")
-                .body(Body::empty())
-                .expect("req"),
-        )
+        .oneshot(post_form(
+            "/confirm",
+            "203.0.113.60",
+            format!("token={confirm_signed}"),
+        ))
         .await
         .expect("response");
 

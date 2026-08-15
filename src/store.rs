@@ -74,6 +74,18 @@ pub struct Subscriber {
     pub confirmed_at: Option<OffsetDateTime>,
     /// When the subscriber clicked the unsubscribe link, if ever.
     pub unsubscribed_at: Option<OffsetDateTime>,
+    /// Consent generation (forkwright/epistole#65). Bumped by
+    /// `POST /unsubscribe` on a successful Active -> Unsubscribed
+    /// transition. A confirm or unsubscribe token is minted against the
+    /// generation read at mint time; a handler only lets the token drive
+    /// a transition while that value still matches this field, which is
+    /// what distinguishes a token minted before a later consent event
+    /// (must stay refused) from one minted after it (must be honored).
+    /// `#[serde(default)]` so a row written before this field existed
+    /// deserializes at generation 0 — the same value a brand-new address
+    /// starts at — with no migration step required.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 /// One newsletter send. Created by `POST /send`; persisted before
@@ -133,11 +145,11 @@ pub struct Store {
     sends: Keyspace,
     /// `deliveries` keyspace handle. Held open at startup so the LSM
     /// flush schedule covers it; the first read/write lands in Phase 2
-    /// (forkwright/epistole#1) when `/send` walks subscribers and
+    /// (forkwright/epistole#3) when `/send` walks subscribers and
     /// records per-recipient delivery outcomes.
     #[expect(
         dead_code,
-        reason = "Phase 2 (forkwright/epistole#1) wires per-recipient delivery records"
+        reason = "Phase 2 (forkwright/epistole#3) wires per-recipient delivery records"
     )]
     deliveries: Keyspace,
 }
@@ -552,6 +564,7 @@ mod pending_purge_tests {
                 created_at: old,
                 confirmed_at: None,
                 unsubscribed_at: None,
+                generation: 0,
             },
             Subscriber {
                 email: "fresh-pending@example.com".to_owned(),
@@ -559,6 +572,7 @@ mod pending_purge_tests {
                 created_at: fresh,
                 confirmed_at: None,
                 unsubscribed_at: None,
+                generation: 0,
             },
             Subscriber {
                 email: "active@example.com".to_owned(),
@@ -566,6 +580,7 @@ mod pending_purge_tests {
                 created_at: old,
                 confirmed_at: Some(old),
                 unsubscribed_at: None,
+                generation: 0,
             },
         ] {
             store.subscriber_put(&subscriber).expect("put");
@@ -653,6 +668,7 @@ mod reopen_tests {
                     created_at: now,
                     confirmed_at: Some(now),
                     unsubscribed_at: None,
+                    generation: 0,
                 })
                 .expect("confirm");
             store
@@ -662,6 +678,7 @@ mod reopen_tests {
                     created_at: now,
                     confirmed_at: Some(now),
                     unsubscribed_at: Some(now),
+                    generation: 1,
                 })
                 .expect("unsubscribe");
         });
@@ -693,6 +710,7 @@ mod reopen_tests {
                     created_at: now,
                     confirmed_at: Some(now),
                     unsubscribed_at: None,
+                    generation: 0,
                 })
                 .expect("confirm");
         });

@@ -146,8 +146,24 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
 
     let public_routes = Router::new()
         .route("/subscribe", post(handlers::subscribe::post))
-        .route("/confirm", get(handlers::confirm::get))
-        .route("/unsubscribe", get(handlers::unsubscribe::get))
+        // GET previews without writing (RFC 9110 §9.2.1); POST commits.
+        // See handlers/confirm.rs and handlers/unsubscribe.rs
+        // (forkwright/epistole#68).
+        .route(
+            "/confirm",
+            get(handlers::confirm::get).post(handlers::confirm::post),
+        )
+        .route(
+            "/unsubscribe",
+            get(handlers::unsubscribe::get).post(handlers::unsubscribe::post),
+        )
+        // RFC 8058 List-Unsubscribe-Post: a mail client POSTs here
+        // directly, no interstitial. Deliberately a separate route from
+        // the manual /unsubscribe above — see handlers/unsubscribe.rs.
+        .route(
+            "/unsubscribe/one-click",
+            post(handlers::unsubscribe::one_click),
+        )
         .route("/archive", get(handlers::archive::get))
         .route("/archive/{send_id}", get(handlers::archive::detail))
         .layer(GovernorLayer::new(governor_conf))

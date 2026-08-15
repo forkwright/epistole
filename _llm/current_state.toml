@@ -41,6 +41,10 @@ item = "fjall 2.x to 3.1.4 migration (issue #21) closed in PR #28."
 date = "2026-05-26"
 item = "AGENTS.md and ARCHITECTURE.md added (issue #25) in PR #27."
 
+[[recent]]
+date = "2026-08-15"
+item = "GET /confirm and /unsubscribe made side-effect-free (POST commits; RFC 8058 one-click endpoint added), and confirm/unsubscribe tokens bound to a subscriber consent generation so a re-subscribe after an unsubscribe can reactivate while a captured stale token cannot (#68, #65)."
+
 [[open_threads]]
 name = "SMTP integration"
 issue = 3
