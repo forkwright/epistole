@@ -92,22 +92,22 @@ pub(crate) async fn get(
 
     let subscriber = state.store.subscriber_get(&token.email)?;
     let page = match subscriber {
-        // No row yet: a stateless confirm token proves the operator
-        // minted a confirmation link, so a missing row previews as
-        // eligible — POST would create it.
-        None => templates::confirm_interstitial(&state.config.brand.name, &p.token),
         // Idempotent target state already reached; show the final page
         // directly rather than a button that would be a no-op.
         Some(s) if s.state == SubscriberState::Active => {
             templates::confirmed(&state.config.brand.name)
         }
-        // Pending (legacy) or Unsubscribed, and this token's generation
-        // still matches the row's current one — POST would activate it.
-        Some(s) if s.generation == token.generation => {
-            templates::confirm_interstitial(&state.config.brand.name, &p.token)
+        // Not Active, and this token's generation no longer matches the
+        // row's current one — superseded by a later consent event.
+        Some(s) if s.generation != token.generation => {
+            templates::invalid_token(&state.config.brand.name)
         }
-        // Generation superseded by a later consent event — stale token.
-        Some(_) => templates::invalid_token(&state.config.brand.name),
+        // Either no row yet (a stateless confirm token proves the
+        // operator minted a confirmation link, so a missing row
+        // previews as eligible), or Pending/Unsubscribed with a
+        // generation that still matches — POST would create/activate
+        // it either way.
+        _ => templates::confirm_interstitial(&state.config.brand.name, &p.token),
     };
     Ok(([(header::CACHE_CONTROL, NO_STORE)], page))
 }

@@ -123,21 +123,23 @@ pub(crate) async fn get(
 
     let subscriber = state.store.subscriber_get(&token.email)?;
     let page = match subscriber {
-        // Nothing to unsubscribe — same shape as any other failure.
-        None => templates::invalid_token(&state.config.brand.name),
         // Idempotent target state already reached; show the final page
         // directly rather than a button that would be a no-op.
         Some(s) if s.state == SubscriberState::Unsubscribed => {
             templates::unsubscribed(&state.config.brand.name)
         }
         // Active, and this token's generation still matches the row's
-        // current one — POST would unsubscribe it.
+        // current one — POST would unsubscribe it. Otherwise a later
+        // consent event (a later opt-in cycle) superseded it,
+        // forkwright/epistole#65 — same invalid-link shape as "nothing
+        // to unsubscribe" below.
         Some(s) if s.generation == token.generation => {
             templates::unsubscribe_interstitial(&state.config.brand.name, &p.token)
         }
-        // Generation superseded by a later consent event (a later
-        // opt-in cycle) — stale token, forkwright/epistole#65.
-        Some(_) => templates::invalid_token(&state.config.brand.name),
+        // Either nothing to unsubscribe (None) or a stale generation
+        // (Some) — one arm covers both since the page is identical
+        // either way (membership-non-disclosure).
+        _ => templates::invalid_token(&state.config.brand.name),
     };
     Ok(([(header::CACHE_CONTROL, NO_STORE)], page))
 }
@@ -210,7 +212,6 @@ fn apply(state: &AppState, raw_token: &str, now: OffsetDateTime) -> Result<Marku
 
     let subscriber = state.store.subscriber_get(&token.email)?;
     match subscriber {
-        None => Ok(templates::invalid_token(&state.config.brand.name)),
         Some(subscriber) if subscriber.state == SubscriberState::Unsubscribed => {
             // Idempotent — no write. No generation check: the
             // transition already happened, so this arm can only
@@ -235,10 +236,9 @@ fn apply(state: &AppState, raw_token: &str, now: OffsetDateTime) -> Result<Marku
             state.store.subscriber_put(&subscriber)?;
             Ok(templates::unsubscribed(&state.config.brand.name))
         }
-        Some(_) => {
-            // Generation superseded — a later opt-out/opt-in cycle moved
-            // the row on since this token was minted.
-            Ok(templates::invalid_token(&state.config.brand.name))
-        }
+        // No row (nothing to unsubscribe) or a stale generation — one
+        // arm covers both, since the page is identical either way
+        // (membership-non-disclosure).
+        _ => Ok(templates::invalid_token(&state.config.brand.name)),
     }
 }
