@@ -71,10 +71,12 @@ impl<'a> MakeWriter<'a> for CapturedLog {
 /// steps and the level `TraceLayer` creates its span at — drives `req`
 /// through `app`, and returns everything that subscriber wrote alongside
 /// the response status.
-#[expect(
-    clippy::expect_used,
-    reason = "test scaffolding - panic on fail is the desired signal"
-)]
+///
+/// NOTE: no `#[expect(clippy::expect_used)]` here — `Router`'s `Service`
+/// impl fixes `Error = Infallible`, so the one `.expect()` below unwraps
+/// a `Result` clippy already knows can never be the `Err` arm, and does
+/// not lint it; an `#[expect]` with nothing to suppress is itself an
+/// error under `-D warnings` (`unfulfilled_lint_expectations`).
 async fn drive_and_capture(app: axum::Router, req: Request<Body>) -> (StatusCode, String) {
     let log = CapturedLog::default();
     let subscriber = tracing_subscriber::fmt()
