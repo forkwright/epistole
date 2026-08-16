@@ -17,23 +17,23 @@ use common::test_config;
 fn seed(store: &Store, send_id: SendId, email: &str) {
     let now = OffsetDateTime::now_utc();
     store
-        .subscriber_put(&Subscriber {
-            email: email.to_owned(),
-            state: SubscriberState::Active,
-            created_at: now,
-            confirmed_at: Some(now),
-            unsubscribed_at: None,
-            generation: 0,
-        })
+        .subscriber_put(&Subscriber::new(
+            email.to_owned(),
+            SubscriberState::Active,
+            now,
+            Some(now),
+            None,
+            0,
+        ))
         .expect("subscriber_put");
     store
-        .delivery_put(&Delivery {
+        .delivery_put(&Delivery::new(
             send_id,
-            email: email.to_owned(),
-            status: DeliveryStatus::Sent,
-            at: now,
-            error: None,
-        })
+            email.to_owned(),
+            DeliveryStatus::Sent,
+            now,
+            None,
+        ))
         .expect("delivery_put");
 }
 

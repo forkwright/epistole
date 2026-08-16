@@ -88,6 +88,31 @@ pub struct Subscriber {
     pub generation: u64,
 }
 
+impl Subscriber {
+    /// Construct a new subscriber record. Useful for tests and
+    /// integration callers that seed store state outside the handler
+    /// path — `#[non_exhaustive]` blocks the struct-literal form from
+    /// outside this crate.
+    #[must_use]
+    pub fn new(
+        email: String,
+        state: SubscriberState,
+        created_at: OffsetDateTime,
+        confirmed_at: Option<OffsetDateTime>,
+        unsubscribed_at: Option<OffsetDateTime>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            email,
+            state,
+            created_at,
+            confirmed_at,
+            unsubscribed_at,
+            generation,
+        }
+    }
+}
+
 /// One newsletter send. Created by `POST /send`; persisted before
 /// delivery so a crash mid-fan-out can resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +143,29 @@ pub struct Delivery {
     pub at: OffsetDateTime,
     /// Relay error message when `status == Failed`.
     pub error: Option<String>,
+}
+
+impl Delivery {
+    /// Construct a new delivery record. Useful for tests and
+    /// integration callers that seed store state outside the handler
+    /// path — `#[non_exhaustive]` blocks the struct-literal form from
+    /// outside this crate.
+    #[must_use]
+    pub fn new(
+        send_id: SendId,
+        email: String,
+        status: DeliveryStatus,
+        at: OffsetDateTime,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            send_id,
+            email,
+            status,
+            at,
+            error,
+        }
+    }
 }
 
 /// Per-recipient delivery state.

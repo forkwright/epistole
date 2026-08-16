@@ -28,14 +28,14 @@ fn capped_config(data_dir: std::path::PathBuf, hourly: u64, daily: u64) -> Confi
 fn put_active(store: &Store, email: &str) {
     let now = OffsetDateTime::now_utc();
     store
-        .subscriber_put(&Subscriber {
-            email: email.to_owned(),
-            state: SubscriberState::Active,
-            created_at: now,
-            confirmed_at: Some(now),
-            unsubscribed_at: None,
-            generation: 0,
-        })
+        .subscriber_put(&Subscriber::new(
+            email.to_owned(),
+            SubscriberState::Active,
+            now,
+            Some(now),
+            None,
+            0,
+        ))
         .expect("subscriber_put");
 }
 
@@ -76,7 +76,7 @@ async fn send_id_replay_produces_no_additional_deliveries_or_sends() {
     let app = router(
         Arc::clone(&store),
         Arc::new(test_config(tmp.path().to_path_buf())),
-        Arc::clone(&mailer),
+        mailer.clone(),
     );
 
     let send_id = SendId::generate();
@@ -244,7 +244,7 @@ async fn a_capped_send_id_is_resumable_once_the_window_resets() {
     let capped_app = router(
         Arc::clone(&store),
         Arc::new(capped_config(tmp.path().to_path_buf(), 1, 100)),
-        Arc::clone(&mailer),
+        mailer.clone(),
     );
     let first = capped_app
         .oneshot(send_request(send_id, "Resumable send"))
@@ -261,7 +261,7 @@ async fn a_capped_send_id_is_resumable_once_the_window_resets() {
     let uncapped_app = router(
         Arc::clone(&store),
         Arc::new(test_config(tmp.path().to_path_buf())),
-        Arc::clone(&mailer),
+        mailer.clone(),
     );
     let second = uncapped_app
         .oneshot(send_request(send_id, "Resumable send"))
