@@ -146,11 +146,11 @@ async fn two_untrusted_peers_sharing_a_forged_xff_get_independent_buckets() {
     // that header, peer A exhausting its budget would ALSO exhaust
     // peer B's, since they'd share one bucket. It doesn't — each peer
     // gets its own budget, proving the key came from ConnectInfo.
+    const SHARED_FORGED_XFF: &str = "9.9.9.9";
+
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
-
-    const SHARED_FORGED_XFF: &str = "9.9.9.9";
 
     // Peer A burns its whole budget (6 allowed, 7th 429s) under the
     // shared forged header.
