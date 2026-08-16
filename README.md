@@ -1,6 +1,6 @@
 # epistole
 
-Sovereign newsletter service for fleet web properties. ἐπιστολή - "letter sent."
+Self-hosted newsletter service for fleet web properties. ἐπιστολή - "letter sent."
 
 Replaces Buttondown for any typikon-consuming site that wants a self-hosted newsletter. Configure the target domain in your instance config (see DEPLOY.md).
 
