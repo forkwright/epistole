@@ -78,8 +78,7 @@ async fn subscribe_then_confirm_round_trip() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let mailer = test_mailer();
-    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // POST /subscribe
     let resp = app
@@ -346,8 +345,7 @@ async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token()
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let mailer = test_mailer();
-    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // 1. POST /subscribe
     let _ = app
@@ -546,8 +544,7 @@ async fn stateless_confirm_with_no_subscriber_creates_active_row() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let mailer = test_mailer();
-    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // Mint a valid confirm token for an address that's never been
     // persisted — generation 0, the same baseline mint_confirm_token
@@ -652,8 +649,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let mailer = test_mailer();
-    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let confirm_signed = epistole::token::sign(
