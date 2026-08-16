@@ -14,7 +14,8 @@ const RELEASE_PREFLIGHT_SCRIPT: &str = include_str!("../.github/scripts/release-
 const RUST_TOOLCHAIN: &str = include_str!("../rust-toolchain.toml");
 const CROSS_CONFIG: &str = include_str!("../Cross.toml");
 
-// --- Immutability: a published asset never changes underneath a tag. ---
+// NOTE: the following tests guard immutability -- a published asset never
+// changes underneath a tag.
 
 #[test]
 fn release_upload_never_clobbers() {
@@ -120,7 +121,8 @@ fn release_preflight_hard_fails_on_an_existing_asset() {
     );
 }
 
-// --- Reproducibility: build inputs are pinned, not floating. ---
+// NOTE: the following tests guard reproducibility -- build inputs are
+// pinned, not floating.
 
 #[test]
 fn cargo_build_and_test_are_locked_to_the_committed_lockfile() {
