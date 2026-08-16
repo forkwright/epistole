@@ -38,24 +38,30 @@ The fjall keyspace lives at `/var/lib/epistole/data/`. Restic backup target shou
 
 1. Sign up at postmarkapp.com → create a "Server" (e.g. "<Your Brand> Letters").
 2. Add `<your-domain>` as a sender signature. Verify the SPF + DKIM records they hand you (drop into Cloudflare DNS).
-3. Generate a server API token. Username AND password for SMTP both = the API token.
+3. Generate a server API token. `SMTP_USERNAME` AND `SMTP_PASSWORD` are both this same token.
+4. Server → Webhooks → add a bounce webhook and a spam-complaint webhook, both pointed at your own translating endpoint (see "Bounce/complaint webhooks" below - Postmark's native payload shape is not what `/webhooks/delivery-events` accepts).
 
 ### Mailgun path
 
 1. Add `mail.<your-domain>` (or `letters.<your-domain>`) as a sending domain.
 2. Add Mailgun's MX, SPF, DKIM, DMARC records to Cloudflare DNS.
-3. Generate an SMTP password from the domain's "Domain credentials" tab.
+3. Generate an SMTP password from the domain's "Domain credentials" tab. `SMTP_USERNAME` is `postmaster@<sending-domain>` - a distinct value from `SMTP_PASSWORD`, unlike Postmark.
+4. Sending → Webhooks → add `permanent_fail` and `complained` webhooks, same translating-endpoint caveat as above.
 
 ## Step 4 - Generate epistole secrets
 
 ```bash
 TOKEN_SECRET=$(head -c 32 /dev/urandom | base64 -w 0)
 SEND_AUTH_TOKEN=$(head -c 24 /dev/urandom | base64 -w 0)
+WEBHOOK_AUTH_TOKEN=$(head -c 24 /dev/urandom | base64 -w 0)
 echo "TOKEN_SECRET=$TOKEN_SECRET"
 echo "SEND_AUTH_TOKEN=$SEND_AUTH_TOKEN"
+echo "WEBHOOK_AUTH_TOKEN=$WEBHOOK_AUTH_TOKEN"
 ```
 
-Save both - you'll paste them into `/etc/epistole.env` in the next step. Losing them isn't catastrophic (regenerate, re-mint outstanding confirm links, accept the brief disruption) but you'll want them in your password manager.
+Save all three - you'll paste them into `/etc/epistole.env` in the next step. Losing them isn't catastrophic (regenerate, re-mint outstanding confirm links, accept the brief disruption) but you'll want them in your password manager.
+
+`WEBHOOK_AUTH_TOKEN` is a bearer secret you invent - it authenticates whatever calls `POST /webhooks/delivery-events`, not a value the relay hands you. It's distinct from `SEND_AUTH_TOKEN` on purpose: a leaked webhook secret must not also authorize triggering a send.
 
 ## Step 5 - Install config + env file
 
@@ -69,17 +75,20 @@ Fill in:
 - `bind = "127.0.0.1:9090"` (the reverse proxy fronts this; no public bind)
 - `data_dir = "/var/lib/epistole/data"`
 - `base_url = "https://letters.<your-domain>"`
+- `send_cap_per_hour` / `send_cap_per_day` - not secrets, just numbers. Start conservative (the shipped example's 500/2000) and raise once you've confirmed the relay plan and list size support more.
 - `[brand]` block with `name = "<Your Brand Name>"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
-- `[smtp]` block with the relay host, port, and username
+- `[smtp]` block with the relay host and port
 
-Leave the three secrets as environment references — do not paste the values
-from step 4 into the toml:
+Leave the four secrets — including both SMTP credentials — as environment
+references — do not paste the values from step 4 into the toml:
 
 ```toml
 token_secret = "${TOKEN_SECRET}"
 send_auth_token = "${SEND_AUTH_TOKEN}"
+webhook_auth_token = "${WEBHOOK_AUTH_TOKEN}"
 
 [smtp]
+username = "${SMTP_USERNAME}"
 password = "${SMTP_PASSWORD}"
 ```
 
@@ -89,9 +98,10 @@ startup, then rejects placeholder or short values. Pasting a literal such as
 `src/config.rs` and the service will not boot.
 
 Keep the root keys (`bind`, `data_dir`, `base_url`, `token_secret`,
-`send_auth_token`) **above** the `[brand]` and `[smtp]` headers. TOML assigns
-every key after a table header to that table, so a root key placed below
-`[smtp]` loads as `smtp.<key>` and fails with `unknown field`.
+`send_auth_token`, `webhook_auth_token`, `send_cap_per_hour`,
+`send_cap_per_day`) **above** the `[brand]` and `[smtp]` headers. TOML
+assigns every key after a table header to that table, so a root key placed
+below `[smtp]` loads as `smtp.<key>` and fails with `unknown field`.
 
 Now write the env file the unit reads, using the values from step 4:
 
@@ -103,6 +113,8 @@ sudoedit /etc/epistole.env
 ```ini
 TOKEN_SECRET=<TOKEN_SECRET from step 4>
 SEND_AUTH_TOKEN=<SEND_AUTH_TOKEN from step 4>
+WEBHOOK_AUTH_TOKEN=<WEBHOOK_AUTH_TOKEN from step 4>
+SMTP_USERNAME=<relay username - Postmark: same token as SMTP_PASSWORD; Mailgun: postmaster@<sending-domain>>
 SMTP_PASSWORD=<relay password / API token>
 ```
 
@@ -365,20 +377,38 @@ This complements the SPF + DKIM records the relay provider gave you. `p=quaranti
 ## Step 10 - Smoke test the full flow
 
 ```bash
-# Subscribe (substitute your real email)
+# Subscribe (substitute your real email — you need to receive this one)
 curl -sf -X POST https://letters.<your-domain>/subscribe \
   -d email=test@example.com
 
-# Confirm the mint was recorded. The line carries an HMAC of the address
-# and deliberately omits the token, so the URL is NOT recoverable here.
-journalctl -u epistole.service | grep "confirm link minted"
+# Confirm the mail went out. The line carries an HMAC of the address, not
+# the address itself or the token - the confirm URL is not recoverable
+# from the journal by design.
+journalctl -u epistole.service | grep "confirm link mailed"
 ```
 
-The confirm URL is not obtainable from a Phase 0 deployment: nothing mails it
-and nothing logs it, and there is no minting subcommand. Until Phase 2
-(forkwright/epistole#1) lands and the confirm email is delivered through the
-SMTP relay, the smoke test ends at the mint log line — a subscribe that
-returns 200 and logs `confirm link minted` is the full Phase 0 signal.
+Check the test inbox and click the confirm link. `GET /confirm?token=...`
+previews (no write); the interstitial's own form does the `POST /confirm`
+that actually activates the subscriber (forkwright/epistole#68).
+
+Then smoke-test a send. `send_id` must be a valid ULID (Crockford Base32,
+26 chars) — any fixed one works for a one-off smoke test, since `/send`'s
+idempotency keys on this value:
+
+```bash
+curl -sf -X POST https://letters.<your-domain>/send \
+  -H "Authorization: Bearer $SEND_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"send_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","subject":"Smoke test","markdown":"# It works"}'
+```
+
+The reply's `sent` count should be 1 (the test address you just confirmed).
+Check the same inbox for the newsletter, including a working `Unsubscribe`
+link in the footer — that link mints an unsubscribe token good for years
+(`UNSUBSCRIBE_LINK_TTL` in `src/handlers/send.rs`), not the confirm link's
+24h window. Re-running the exact same `curl` command is safe to try: the
+reply's `sent` becomes 0 and `already_delivered` becomes 1 — the second
+call recorded no new delivery.
 
 Subscriber state is not inspectable from the filesystem either. fjall stores
 keyspaces by numeric id under `<data_dir>/keyspaces/<id>/`, not by name, so
@@ -485,10 +515,30 @@ existing `Subscriber` rows deserialize with `generation = 0`, which is
 the same baseline a brand-new address starts at, so restarting onto the
 new binary is the entire upgrade step.
 
+## Bounce/complaint webhooks
+
+`POST /webhooks/delivery-events` records a bounce or complaint outcome
+against an existing delivery row and, for a complaint or a hard bounce,
+suppresses the subscriber (Active → Unsubscribed) the same way a visitor's
+own unsubscribe click does. It is bearer-authenticated by `webhook_auth_token`
+and takes a small provider-agnostic body:
+
+```json
+{"send_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "email": "reader@example.com", "kind": "bounce", "hard": true}
+```
+
+Neither Postmark's nor Mailgun's native webhook payload matches this shape —
+picking a relay account and wiring its real webhook is a Step 3 operator
+decision, this runbook doesn't make it for you. Point the relay's webhook at
+a small translating endpoint (a Cloudflare Worker, an NPM location block
+that reshapes the body, or anything that speaks the relay's format on one
+side and this JSON shape on the other) rather than the relay's raw URL.
+
 ## What's NOT in this runbook
 
-- **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#3. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days. When Phase 2 mints per-recipient unsubscribe tokens for a send, it should set `List-Unsubscribe: <base_url>/unsubscribe/one-click?token=...>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` on the outbound message — the endpoint those headers need already exists (`POST /unsubscribe/one-click`, forkwright/epistole#68) and only wants headers pointed at it.
+- **A bounce/complaint webhook adapter for a specific relay** - `POST /webhooks/delivery-events`'s ledger-update and suppression logic is live; translating Postmark's or Mailgun's native webhook JSON into its provider-agnostic shape is the operator-credential step described above.
 - **Archive feed/import polish** - the `/archive` index/detail pages walk the sends ledger; `/archive.xml` and import tooling remain follow-up work.
 - **bin/epistole-import** - tracked separately; Phase 3.
 
-These are all additive; the substrate landed in Phase 0 is sufficient to start collecting subscribers + composing Sends, even before the SMTP wire-up.
+These are all additive; the substrate landed in Phase 0 plus the SMTP
+wire-up above is sufficient to run a real newsletter.

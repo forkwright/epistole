@@ -9,9 +9,9 @@ source_docs = [
 ]
 
 [state]
-summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows and deployment runbook in place."
-current_phase = "Phase 1 complete: subscriber lifecycle, archive, and operator send endpoint functional. SMTP relay delivery (issue #3) pending."
-updated = "2026-05-26"
+summary = "Epistole is the Rust newsletter service for fleet web properties, with public subscription flows, deployment runbook, and SMTP relay delivery in place."
+current_phase = "Phase 2 complete: lettre wired into subscribe (confirm email) and send (newsletter fan-out with idempotent send_id, per-delivery ledger, hourly/daily caps, bounce/complaint webhook suppression). Phase 3 (real relay account, DNS/DKIM/SPF/DMARC, provider-specific webhook adapter) is operator-credential work, not agent-driven."
+updated = "2026-08-15"
 
 [[recent]]
 date = "2026-05-06"
@@ -45,10 +45,14 @@ item = "AGENTS.md and ARCHITECTURE.md added (issue #25) in PR #27."
 date = "2026-08-15"
 item = "GET /confirm and /unsubscribe made side-effect-free (POST commits; RFC 8058 one-click endpoint added), and confirm/unsubscribe tokens bound to a subscriber consent generation so a re-subscribe after an unsubscribe can reactivate while a captured stale token cannot (#68, #65)."
 
+[[recent]]
+date = "2026-08-15"
+item = "Phase 2 SMTP wiring (issue #3): AsyncSmtpTransport against the configured relay, subscribe mails the confirm link, send fans out to Active subscribers with a per-recipient unsubscribe token and List-Unsubscribe/List-Unsubscribe-Post headers, a Delivery ledger row per recipient, caller-supplied send_id idempotency (a retry resumes rather than re-sends), hourly/daily send caps, and POST /webhooks/delivery-events for bounce/complaint ingestion + suppression. smtp.username moved to SecretString (#42)."
+
 [[open_threads]]
-name = "SMTP integration"
-issue = 3
-status = "lettre integration in subscribe + send remains tracked as the next service milestone."
+name = "Provider-specific bounce/complaint webhook adapter"
+issue = 0
+status = "POST /webhooks/delivery-events takes a provider-agnostic {send_id, email, kind, hard} body; translating a real relay's native webhook payload into that shape is Phase 3 operator-credential work (which relay account, real domain)."
 
 [[open_threads]]
 name = "Consumer site cutover"
