@@ -109,6 +109,28 @@ fn caddy_site_label_does_not_append_a_second_tld() {
 }
 
 #[test]
+fn caddy_access_log_redacts_the_token_query_parameter() {
+    // forkwright/epistole#66: /confirm, /unsubscribe, and
+    // /unsubscribe/one-click carry a signed capability token (and,
+    // nested inside it, the subscriber's email) as a `token` query
+    // parameter. Caddy's default `format json` records the complete
+    // request URI verbatim, so a deploy that reverted to it would
+    // persist every one of those tokens to
+    // /var/log/caddy/letters-access.log. Proxy-style companion to the
+    // application-level capture tests in tests/tracing_redaction.rs.
+    assert!(
+        CADDY_SNIPPET.contains("format filter"),
+        "access log must use Caddy's filter encoder, not plain `format json`, \
+         to redact the token query parameter"
+    );
+    assert!(
+        CADDY_SNIPPET.contains("request>uri query") && CADDY_SNIPPET.contains("delete token"),
+        "the uri's `token` query parameter must be deleted before the request \
+         reaches the access log"
+    );
+}
+
+#[test]
 fn systemd_unit_tolerates_an_absent_env_file() {
     assert!(
         SERVICE_UNIT.contains("EnvironmentFile=-"),
