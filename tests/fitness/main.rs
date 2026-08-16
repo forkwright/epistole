@@ -54,7 +54,7 @@ fn normalize(source: &str) -> String {
 }
 
 /// The keyspace handles inside `Store`.
-const KEYSPACES: [&str; 3] = ["subscribers", "sends", "deliveries"];
+const KEYSPACES: [&str; 4] = ["subscribers", "sends", "deliveries", "rate_limits"];
 
 /// Mutating fjall keyspace operations.
 const MUTATORS: [&str; 2] = ["insert", "remove"];

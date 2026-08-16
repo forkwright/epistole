@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use epistole::mailer::SmtpMailer;
 use epistole::{Config, Error, Result, Store};
 use time::{Duration, OffsetDateTime};
 use tracing_subscriber::{EnvFilter, fmt};
@@ -50,7 +51,8 @@ async fn main() -> Result<()> {
             "purged expired legacy pending subscribers at startup"
         );
     }
-    let app = epistole::router(store, Arc::new(config));
+    let mailer = Arc::new(SmtpMailer::from_config(&config.smtp)?);
+    let app = epistole::router(store, Arc::new(config), mailer);
 
     tracing::info!(addr = %bind, "epistole listening");
     let listener = tokio::net::TcpListener::bind(bind)

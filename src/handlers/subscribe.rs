@@ -7,11 +7,15 @@
 
 use axum::{Form, extract::State, response::IntoResponse};
 use email_address::{EmailAddress, Options};
+use lettre::Message;
+use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
 use secrecy::ExposeSecret;
 use serde::Deserialize;
 use time::OffsetDateTime;
 
 use crate::AppState;
+use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::templates;
 
@@ -47,7 +51,9 @@ fn strict_email_options() -> Options {
 ///
 /// Returns [`Error::BadRequest`] on a malformed or oversized email,
 /// [`Error::Store`] on a store read failure while minting the confirm
-/// token, or [`Error::Config`] when token signing cannot be initialized.
+/// token, [`Error::Config`] when token signing cannot be initialized, or
+/// [`Error::Smtp`] when the confirmation email cannot be composed or the
+/// relay rejects it.
 pub(crate) async fn post(
     State(state): State<AppState>,
     Form(body): Form<Body>,
@@ -81,15 +87,15 @@ pub(crate) async fn post(
     // avoiding a fjall write until /confirm proves mailbox ownership.
     let now = OffsetDateTime::now_utc();
 
-    let _signed = mint_confirm_token(&state, &email_norm, now)?;
+    let signed = mint_confirm_token(&state, &email_norm, now)?;
+    let confirm_url = format!("{}/confirm?token={signed}", state.config.base_url);
+    let message = build_confirm_message(&state.config, &email_norm, &confirm_url)?;
+    state.mailer.send(message).await?;
 
-    // Phase 2 (forkwright/epistole#3) wires lettre — until then, the
-    // operator pulls the confirm URL by signing it themselves with
-    // `epistole-mint-token` (or a manual sign() call). The log line
-    // intentionally does NOT include the email or the confirm URL:
-    // both are token-bearing PII that flows into Vector → GreptimeDB
-    // and journal logs may persist for weeks. A hash digest of the
-    // email gives the operator just enough to correlate without
+    // The log line intentionally does NOT include the email or the
+    // confirm URL: both are token-bearing PII that flows into Vector →
+    // GreptimeDB and journal logs may persist for weeks. A hash digest
+    // of the email gives the operator just enough to correlate without
     // leaking the address.
     // Reaudit finding #28: hash the email with the token_secret as
     // an HMAC key so a journal exfil can't be rainbow-matched against
@@ -114,14 +120,46 @@ pub(crate) async fn post(
         }
         hex[..16].to_owned()
     };
-    tracing::info!(email_hmac_short = %email_hash, "confirm link minted (phase 0: operator mints URL out-of-band)");
+    tracing::info!(email_hmac_short = %email_hash, "confirm link mailed");
 
     Ok(templates::pending(&state.config.brand.name, &email_norm).into_response())
 }
 
+/// Compose the confirmation email for `email_norm`.
+///
+/// # Errors
+///
+/// Returns [`Error::Smtp`] when the brand's `from_address`, or
+/// `email_norm` itself, fail to parse as an RFC 5322 mailbox, or when
+/// message composition otherwise fails.
+fn build_confirm_message(config: &Config, email_norm: &str, confirm_url: &str) -> Result<Message> {
+    let from: Mailbox = format!("{} <{}>", config.brand.name, config.brand.from_address)
+        .parse()
+        .map_err(|e| Error::Smtp {
+            reason: format!("brand from_address: {e}"),
+        })?;
+    let to: Mailbox = email_norm.parse().map_err(|e| Error::Smtp {
+        reason: format!("recipient address: {e}"),
+    })?;
+
+    let body = templates::confirm_email_html(&config.brand.name, confirm_url).into_string();
+
+    Message::builder()
+        .from(from)
+        .to(to)
+        .subject(format!(
+            "Confirm your subscription to {}",
+            config.brand.name
+        ))
+        .header(ContentType::TEXT_HTML)
+        .body(body)
+        .map_err(|e| Error::Smtp {
+            reason: format!("compose message: {e}"),
+        })
+}
+
 /// Do the same CPU work for each valid subscribe path by minting the
-/// stateless confirm token. The caller owns whether that token should be
-/// mailed; Phase 0 only logs the HMAC'd address for operator correlation.
+/// stateless confirm token the caller mails.
 ///
 /// No subscriber row is written here — the lookup below is a read. That
 /// read is what keeps the security boundary for forkwright/epistole#5

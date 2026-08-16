@@ -154,6 +154,35 @@ pub(crate) fn archive_detail(brand: &str, send: &Send) -> Markup {
     shell(brand, &send.subject, &body)
 }
 
+/// Body of the confirmation email sent by `POST /subscribe`. Distinct
+/// from [`confirm_interstitial`] (the web page `GET /confirm?token=...`
+/// renders): this is the message body itself, so its one link goes
+/// straight at the GET endpoint rather than posting a same-origin form.
+pub(crate) fn confirm_email_html(brand: &str, confirm_url: &str) -> Markup {
+    html! {
+        p { "Click below to finish subscribing to " (brand) "." }
+        p { a href=(confirm_url) { "Confirm your subscription" } }
+        p { "This link expires in 24 hours. If you didn't request this, ignore it." }
+    }
+}
+
+/// Wrap a send's rendered `body_html` for the OUTBOUND email specifically
+/// — never persisted back onto [`crate::store::Send::body_html`], which
+/// stays the shared, reader-neutral content the public `/archive` page
+/// renders. The per-recipient unsubscribe link only ever exists in the
+/// copy that actually leaves the process as a message body.
+pub(crate) fn newsletter_email_html(body_html: &str, unsubscribe_url: &str) -> String {
+    let footer = html! {
+        hr;
+        p {
+            "Don't want these? "
+            a href=(unsubscribe_url) { "Unsubscribe" }
+            "."
+        }
+    };
+    format!("{body_html}\n{}", footer.into_string())
+}
+
 fn date_label(sent_at: OffsetDateTime) -> String {
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} UTC",

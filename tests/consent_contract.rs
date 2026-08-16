@@ -34,7 +34,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::test_config;
+use common::{test_config, test_mailer};
 
 #[expect(
     clippy::expect_used,
@@ -84,7 +84,8 @@ async fn get_confirm_with_a_valid_token_does_not_mutate() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = Token::new(
@@ -133,7 +134,8 @@ async fn head_confirm_with_a_valid_token_does_not_mutate() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = Token::new(
@@ -168,7 +170,8 @@ async fn get_and_head_unsubscribe_with_a_valid_token_do_not_mutate() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let xff = "203.0.113.103";
 
     // Get a real Active subscriber on the books first, so there is
@@ -261,7 +264,8 @@ async fn post_confirm_and_unsubscribe_responses_carry_no_store() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let xff = "203.0.113.104";
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -332,7 +336,8 @@ async fn fresh_confirm_token_minted_after_unsubscribe_reactivates_the_subscriber
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let secret = cfg.token_secret.expose_secret().as_bytes();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let xff = "203.0.113.105";
@@ -425,7 +430,8 @@ async fn stale_unsubscribe_token_cannot_cancel_a_later_opt_in() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let secret = cfg.token_secret.expose_secret().as_bytes();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let xff = "203.0.113.106";
@@ -532,7 +538,8 @@ async fn one_click_unsubscribe_with_the_rfc_8058_body_unsubscribes() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let secret = cfg.token_secret.expose_secret().as_bytes();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let xff = "203.0.113.107";
@@ -598,7 +605,8 @@ async fn one_click_unsubscribe_rejects_a_body_that_is_not_the_rfc_8058_marker() 
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let secret = cfg.token_secret.expose_secret().as_bytes();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let xff = "203.0.113.108";
@@ -662,7 +670,11 @@ async fn one_click_unsubscribe_is_post_only() {
     // URL (which mail clients sometimes probe) cannot trigger it either.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(get(
@@ -690,7 +702,8 @@ async fn post_confirm_applied_twice_does_not_double_write() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let xff = "203.0.113.110";
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -757,7 +770,8 @@ async fn post_unsubscribe_applied_twice_bumps_generation_exactly_once() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let mailer = test_mailer();
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), Arc::clone(&mailer));
     let secret = cfg.token_secret.expose_secret().as_bytes();
     let xff = "203.0.113.111";
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
