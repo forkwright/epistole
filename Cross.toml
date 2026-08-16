@@ -1,0 +1,8 @@
+# WHY(#70): pin the aarch64 cross-compilation container to a content
+# digest, not a floating tag -- a version-numbered tag can still be
+# repointed at the registry without this reference changing. Re-derive
+# after any CROSS_VERSION bump in .github/workflows/release.yml:
+#   skopeo inspect --format '{{.Digest}}' \
+#     docker://ghcr.io/cross-rs/aarch64-unknown-linux-gnu:<version>
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5@sha256:7f8308a8734d9fcd2ebbe9a3e4bdea74af293f0799d80c3cc341e340cda49a4c"
