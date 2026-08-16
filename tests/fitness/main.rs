@@ -67,15 +67,21 @@ fn keyspace_mutations_stay_inside_the_store_module() {
     // acknowledges consent transitions that a power loss can still lose —
     // forkwright/epistole#69. Routing every write through a typed `Store`
     // method is what keeps that choice in one place.
+    //
+    // WHY the two-part exclusion: the `store` module spans `src/store.rs`
+    // plus every file under `src/store/`. Excluding only the literal
+    // `store.rs` path would make this rule fire on the module's own
+    // methods wherever one of its submodules defines them.
     let mut sources = Vec::new();
     rust_sources(&src_dir(), &mut sources);
     assert!(!sources.is_empty(), "found no Rust sources under src/");
 
     let store_module = src_dir().join("store.rs");
+    let store_dir = src_dir().join("store");
     let mut offenders = Vec::new();
 
     for path in sources {
-        if path == store_module {
+        if path == store_module || path.starts_with(&store_dir) {
             continue;
         }
         let source = match std::fs::read_to_string(&path) {
