@@ -62,11 +62,17 @@ const SEND_BODY_LIMIT: usize = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Rate-limit key extractor that only honors `X-Forwarded-For` when the
-/// immediate TCP peer (`ConnectInfo`) is a configured trusted proxy.
-/// Any client reaching epistole directly — bypassing the proxy, or
-/// because none is configured — cannot spoof its rate-limit key by
-/// setting the header: the header is ignored outright and the key is
-/// the verified peer address instead.
+/// immediate TCP peer (`ConnectInfo`) is a configured trusted proxy —
+/// matched against `config::TrustedProxyRange`, so a `trusted_proxies`
+/// entry may be a single address or a CIDR range. Any client reaching
+/// epistole directly — bypassing the proxy, or because none is
+/// configured — cannot spoof its rate-limit key by setting the header:
+/// the header is ignored outright and the key is the verified peer
+/// address instead. The peer is canonicalized (`IpAddr::to_canonical`)
+/// before both the trust check and its use as a key, so a dual-stack
+/// listener that surfaces an IPv4 proxy as `::ffff:a.b.c.d` still
+/// matches a plain IPv4 `trusted_proxies` entry instead of silently
+/// falling into the untrusted branch.
 ///
 /// Single-hop model only: once the immediate peer is verified trusted,
 /// the LAST `X-Forwarded-For` entry is taken at face value as the real
@@ -86,18 +92,18 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// fails closed rather than trusting anything the client sent.
 #[derive(Clone, Debug)]
 struct TrustedProxyExtractor {
-    trusted: Arc<[IpAddr]>,
+    trusted: Arc<[config::TrustedProxyRange]>,
 }
 
 impl TrustedProxyExtractor {
-    fn new(trusted_proxies: &[IpAddr]) -> Self {
+    fn new(trusted_proxies: &[config::TrustedProxyRange]) -> Self {
         Self {
             trusted: trusted_proxies.into(),
         }
     }
 
     fn is_trusted(&self, peer: IpAddr) -> bool {
-        self.trusted.contains(&peer)
+        self.trusted.iter().any(|range| range.contains(peer))
     }
 }
 
@@ -111,7 +117,13 @@ impl KeyExtractor for TrustedProxyExtractor {
         let peer = req
             .extensions()
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip())
+            // Canonicalize once here: an IPv4-mapped-IPv6 peer
+            // (`::ffff:a.b.c.d`) on a dual-stack listener must match a
+            // plain IPv4 `trusted_proxies` entry, and the untrusted
+            // branch below returns this same value as the rate-limit
+            // key, so the bucket stays stable regardless of which
+            // socket-address shape the OS reported.
+            .map(|ci| ci.0.ip().to_canonical())
             .ok_or(GovernorError::UnableToExtractKey)?;
 
         if !self.is_trusted(peer) {

@@ -45,6 +45,6 @@ pub fn test_config(data_dir: PathBuf) -> Config {
         },
         token_secret: SecretString::from("test-secret-32-bytes-padding-aaaa".to_owned()),
         send_auth_token: SecretString::from("operator-bearer-test".to_owned()),
-        trusted_proxies: vec![TRUSTED_PROXY_IP],
+        trusted_proxies: vec![TRUSTED_PROXY_IP.into()],
     }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
+use epistole::config::TrustedProxyRange;
 use epistole::{Store, router};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -270,4 +271,151 @@ async fn request_with_no_connect_info_and_no_xff_is_refused() {
         .await
         .expect("response");
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn cidr_range_peers_that_are_not_the_literal_entry_are_still_trusted() {
+    // PR #103's own "substantive" finding: `trusted_proxies` accepted
+    // only single literal addresses (exact `IpAddr` equality), which a
+    // reverse proxy behind a load balancer rarely presents. Two DIFFERENT
+    // peers inside a configured /24 — neither one the literal entry —
+    // share a forged X-Forwarded-For. If range matching works, both are
+    // trusted and key on the (shared) header value, so they collapse
+    // onto ONE bucket: peer A exhausts it, peer B's first request under
+    // the same header 429s immediately too. Exact-equality matching
+    // would have treated both as untrusted (header ignored, each keys
+    // on its own address) and peer B's first request would succeed.
+    const SHARED_XFF: &str = "203.0.113.55";
+    let peer_a = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), 0);
+    let peer_b = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 20)), 0);
+
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let mut config = test_config(tmp.path().to_path_buf());
+    config.trusted_proxies = vec![
+        "198.51.100.0/24"
+            .parse::<TrustedProxyRange>()
+            .expect("cidr"),
+    ];
+    let app = router(store, Arc::new(config));
+
+    let mut peer_a_last_status = StatusCode::OK;
+    for i in 0..7u32 {
+        let body = format!("email=cidr-a{i}%40example.com");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/subscribe")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", SHARED_XFF)
+                    .extension(ConnectInfo(peer_a))
+                    .body(Body::from(body))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        peer_a_last_status = resp.status();
+    }
+    assert_eq!(
+        peer_a_last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "peer A (in-range, not the literal entry) must be trusted and exhaust the header's bucket"
+    );
+
+    let peer_b_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", SHARED_XFF)
+                .extension(ConnectInfo(peer_b))
+                .body(Body::from("email=cidr-b0%40example.com"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        peer_b_resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "peer B (a different in-range address) must share peer A's bucket via the header — \
+         exact-literal matching would have keyed peer B on its own address and returned 200"
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+async fn ipv4_mapped_ipv6_peer_still_matches_a_plain_ipv4_trusted_entry() {
+    // PR #103 adversarial review, Finding 2: on a dual-stack listener
+    // the OS can report an IPv4 proxy's peer as `::ffff:a.b.c.d`
+    // instead of plain IPv4. `trusted_proxies` here holds only the
+    // plain-V4 `TRUSTED_PROXY_IP`. A peer whose ConnectInfo carries the
+    // IPv4-mapped-V6 form of that SAME address must still be recognized
+    // as trusted (canonicalized before comparison) — proven the same
+    // shared-bucket way as the CIDR test above: the mapped-form peer's
+    // first request, under the plain-form peer's already-exhausted
+    // header bucket, must 429 rather than succeed.
+    const SHARED_XFF: &str = "203.0.113.66";
+    let mapped_peer = SocketAddr::new(
+        IpAddr::V6(Ipv4Addr::new(198, 51, 100, 1).to_ipv6_mapped()),
+        0,
+    );
+
+    let tmp = TempDir::new().expect("tempdir");
+    let store = Arc::new(Store::open(tmp.path()).expect("store"));
+    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+
+    let mut plain_form_last_status = StatusCode::OK;
+    for i in 0..7u32 {
+        let body = format!("email=mapped-a{i}%40example.com");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/subscribe")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", SHARED_XFF)
+                    .extension(trusted_peer())
+                    .body(Body::from(body))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        plain_form_last_status = resp.status();
+    }
+    assert_eq!(
+        plain_form_last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the plain-IPv4 trusted peer must exhaust the shared header's bucket first"
+    );
+
+    let mapped_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/subscribe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", SHARED_XFF)
+                .extension(ConnectInfo(mapped_peer))
+                .body(Body::from("email=mapped-b0%40example.com"))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        mapped_resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "an IPv4-mapped-IPv6 peer for the SAME trusted address must share the plain-IPv4 \
+         form's bucket — without normalization it would be untrusted and return 200"
+    );
 }

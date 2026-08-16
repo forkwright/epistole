@@ -1,11 +1,14 @@
 //! Tests for the `${VAR}` env-resolution + secret-strength validation
 //! paths in `Config::load`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use secrecy::{ExposeSecret, SecretString};
 
-use super::{is_valid_env_ref, resolve_secret_env, validate_bind_policy, validate_secret_strength};
+use super::{
+    Config, TrustedProxyRange, is_valid_env_ref, resolve_secret_env, validate_bind_policy,
+    validate_secret_strength,
+};
 
 #[test]
 #[expect(
@@ -222,9 +225,60 @@ fn bind_policy_rejects_non_loopback_bind_with_no_trusted_proxies() {
     reason = "test scaffolding - panic on fail is the desired signal"
 )]
 fn bind_policy_allows_non_loopback_bind_once_trusted_proxies_is_set() {
-    let proxies: Vec<IpAddr> = vec!["192.168.1.10".parse().expect("ip")];
+    let proxies: Vec<TrustedProxyRange> = vec!["192.168.1.10".parse().expect("range")];
     validate_bind_policy("192.168.1.20:9090", &proxies)
         .expect("a declared trust policy clears a non-loopback bind");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - fixture setup, not the assertion target"
+)]
+fn config_load_refuses_to_boot_with_non_loopback_bind_and_no_trusted_proxies() {
+    // Asserted-vs-exhibited gap (PR #103 adversarial review, Finding 1):
+    // `bind_policy_rejects_non_loopback_bind_with_no_trusted_proxies`
+    // above calls `validate_bind_policy` directly — it never proves
+    // `Config::load` (the entrypoint `main.rs` actually calls) refuses
+    // to boot. A refactor that moved the `validate_bind_policy?` call
+    // (src/config.rs's `Config::load`) behind an early return, or added
+    // a second `Config`-construction path, would silently drop the
+    // check while every prior test kept passing. This fixture parses a
+    // full epistole.toml-shaped file through the real entrypoint.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let toml_path = dir.path().join("epistole.toml");
+    let toml = format!(
+        r#"
+bind = "0.0.0.0:9090"
+data_dir = "{data_dir}"
+base_url = "https://letters.example.com"
+token_secret = "Yk9mNTBjZWE3OTIzNzg5YzkzMjg0NWE2YWRkOWM4MTM"
+send_auth_token = "4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e"
+
+[brand]
+name = "Test Brand"
+from_address = "letters@example.com"
+
+[smtp]
+host = "smtp.example.com"
+port = 587
+username = "user"
+password = "9f8e7d6c5b4a3f2e1d0c"
+"#,
+        data_dir = dir.path().join("data").display(),
+    );
+    std::fs::write(&toml_path, toml).expect("write config");
+
+    let err = Config::load(&toml_path).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("trusted_proxies") && msg.contains("loopback"),
+        "Config::load must itself surface the bind-policy refusal, got: {msg}"
+    );
 }
 
 #[test]
@@ -236,4 +290,77 @@ fn bind_policy_defers_an_unparseable_bind_to_the_caller() {
     // Not this function's job to reject a malformed bind — main.rs's
     // own SocketAddr parse surfaces that error with its own message.
     validate_bind_policy("not-an-address", &[]).expect("unparseable bind is not this check's job");
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn trusted_proxy_range_bare_address_is_host_length() {
+    let range: TrustedProxyRange = "203.0.113.5".parse().expect("valid address");
+    assert!(range.contains(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5))));
+    assert!(!range.contains(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6))));
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn trusted_proxy_range_cidr_matches_whole_subnet() {
+    // Issue #67 desired-correction: "typed CIDRs or addresses" — a
+    // proxy pool behind a load balancer rarely presents one stable
+    // address, so a single /32 literal per entry isn't enough.
+    let range: TrustedProxyRange = "10.0.0.0/24".parse().expect("valid cidr");
+    assert!(range.contains(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+    assert!(range.contains(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 254))));
+    assert!(!range.contains(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1))));
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn trusted_proxy_range_rejects_prefix_exceeding_family_max() {
+    let err = "10.0.0.0/33".parse::<TrustedProxyRange>().unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn trusted_proxy_range_rejects_garbage_address() {
+    let err = "not-an-ip/24".parse::<TrustedProxyRange>().unwrap_err();
+    assert!(err.contains("invalid address"), "{err}");
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn trusted_proxy_range_contains_normalizes_ipv4_mapped_ipv6_peer() {
+    // PR #103 adversarial review, Finding 2: a dual-stack listener can
+    // report an IPv4 proxy's peer address as `::ffff:a.b.c.d` rather
+    // than plain IPv4. Without normalizing both sides to canonical
+    // form, this comparison against a plain-IPv4 `trusted_proxies`
+    // entry fails the address-family match and the legitimate proxy
+    // silently drops into the untrusted branch.
+    let range: TrustedProxyRange = "198.51.100.1".parse().expect("valid address");
+    let mapped = IpAddr::V6(Ipv4Addr::new(198, 51, 100, 1).to_ipv6_mapped());
+    assert!(range.contains(mapped));
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn trusted_proxy_range_family_mismatch_never_matches() {
+    let range: TrustedProxyRange = "203.0.113.0/24".parse().expect("valid cidr");
+    assert!(!range.contains(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)));
 }

@@ -71,11 +71,15 @@ Fill in:
 - `base_url = "https://letters.<your-domain>"`
 - `[brand]` block with `name = "<Your Brand Name>"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
 - `[smtp]` block with the relay host, port, and username
-- `trusted_proxies` — the address NPM connects to epistole FROM, not the
-  address it forwards TO. `["127.0.0.1"]` for the same-box topology this
-  runbook uses; NPM's own LAN IP if it runs on a different host. Leaving
-  this empty is safe but means `X-Forwarded-For` is never honored, so
-  every visitor behind NPM collapses onto one rate-limit bucket — see
+- `trusted_proxies` — the address(es) NPM connects to epistole FROM, not
+  the address it forwards TO. `["127.0.0.1"]` for the same-box topology
+  this runbook uses; NPM's own LAN IP if it runs on a different host.
+  Each entry accepts a CIDR range (`"10.0.0.0/24"`) instead of a single
+  address if that host doesn't present one stable IP (a load-balanced
+  NPM pool, for example) — this runbook's single-box topology doesn't
+  need it, but the field isn't limited to single literals. Leaving this
+  empty is safe but means `X-Forwarded-For` is never honored, so every
+  visitor behind NPM collapses onto one rate-limit bucket — see
   `TrustedProxyExtractor` in `src/lib.rs`
 
 Leave the three secrets as environment references — do not paste the values
