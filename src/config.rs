@@ -3,7 +3,9 @@
 //! [`secrecy::SecretString`] so they zeroize on drop and don't leak via
 //! `Debug` / `Display`.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -35,6 +37,18 @@ pub struct Config {
     pub token_secret: SecretString,
     /// Bearer token required for `/send`. Operator-only.
     pub send_auth_token: SecretString,
+    /// Reverse-proxy peers `X-Forwarded-For` is honored from — each
+    /// entry a single address (`"127.0.0.1"`) or a CIDR range
+    /// (`"10.0.0.0/24"`) for a proxy pool that doesn't present one
+    /// stable address (e.g. behind a load balancer). Checked against
+    /// the immediate TCP peer (`ConnectInfo`), never the header content
+    /// itself. Empty (the default) means no peer is trusted, so
+    /// `X-Forwarded-For` is always ignored and the rate limiter keys on
+    /// the raw connecting peer — safe, but collapses every visitor
+    /// behind an unconfigured reverse proxy into one bucket. See
+    /// `TrustedProxyExtractor` in `src/lib.rs`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<TrustedProxyRange>,
 }
 
 impl std::fmt::Debug for Config {
@@ -47,6 +61,7 @@ impl std::fmt::Debug for Config {
             .field("smtp", &self.smtp)
             .field("token_secret", &"<redacted>")
             .field("send_auth_token", &"<redacted>")
+            .field("trusted_proxies", &self.trusted_proxies)
             .finish()
     }
 }
@@ -88,6 +103,125 @@ impl std::fmt::Debug for Smtp {
     }
 }
 
+/// A single `trusted_proxies` entry: one address (an implicit
+/// host-length prefix — `/32` for IPv4, `/128` for IPv6) or an explicit
+/// CIDR range, e.g. `"127.0.0.1"` or `"10.0.0.0/24"`. The latter covers
+/// a reverse-proxy pool that doesn't present one stable address (a
+/// load balancer in front of several proxy instances) — forkwright/epistole#67's
+/// desired correction named this explicitly ("typed CIDRs or
+/// addresses"), not just single literals.
+///
+/// The stored network is canonicalized (`IpAddr::to_canonical`) at
+/// parse time, so an operator-entered `::ffff:10.0.0.1` and `10.0.0.1`
+/// are the same range; `contains` canonicalizes the peer the same way,
+/// so a dual-stack listener that surfaces an IPv4 peer as
+/// `::ffff:a.b.c.d` still matches a plain IPv4 entry.
+#[derive(Clone, Copy, Debug)]
+pub struct TrustedProxyRange {
+    network: IpAddr,
+    prefix_len: u8,
+}
+
+impl TrustedProxyRange {
+    /// True if `peer` falls inside this range. `peer` need not already
+    /// be canonicalized — this normalizes it the same way the stored
+    /// network was normalized at parse time.
+    pub(crate) fn contains(&self, peer: IpAddr) -> bool {
+        let peer = peer.to_canonical();
+        match (self.network, peer) {
+            (IpAddr::V4(net), IpAddr::V4(p)) => {
+                let mask = mask32(self.prefix_len);
+                u32::from(net) & mask == u32::from(p) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(p)) => {
+                let mask = mask128(self.prefix_len);
+                u128::from(net) & mask == u128::from(p) & mask
+            }
+            // Address-family mismatch after canonicalization: an IPv6
+            // range never matches an IPv4 peer and vice versa.
+            _ => false,
+        }
+    }
+}
+
+impl From<IpAddr> for TrustedProxyRange {
+    /// A bare address is a host-length range (`/32` or `/128`).
+    fn from(addr: IpAddr) -> Self {
+        let network = addr.to_canonical();
+        let prefix_len = match network {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        Self {
+            network,
+            prefix_len,
+        }
+    }
+}
+
+impl FromStr for TrustedProxyRange {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let (addr_part, len_part) = match s.split_once('/') {
+            Some((addr, len)) => (addr, Some(len)),
+            None => (s, None),
+        };
+        let network = addr_part
+            .parse::<IpAddr>()
+            .map_err(|e| format!("{s}: invalid address: {e}"))?
+            .to_canonical();
+        let max_len: u8 = match network {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        let prefix_len = match len_part {
+            Some(len) => len
+                .parse::<u8>()
+                .map_err(|e| format!("{s}: invalid prefix length: {e}"))?,
+            None => max_len,
+        };
+        if prefix_len > max_len {
+            return Err(format!(
+                "{s}: prefix length /{prefix_len} exceeds /{max_len} for this address family"
+            ));
+        }
+        Ok(Self {
+            network,
+            prefix_len,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TrustedProxyRange {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// `prefix_len == 0` is handled separately because `u32::MAX << 32` is
+/// an out-of-range shift (panics in debug, UB-shaped in release).
+fn mask32(prefix_len: u8) -> u32 {
+    if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix_len))
+    }
+}
+
+/// Same out-of-range-shift guard as `mask32`, for the 128-bit case.
+fn mask128(prefix_len: u8) -> u128 {
+    if prefix_len == 0 {
+        0
+    } else {
+        u128::MAX << (128 - u32::from(prefix_len))
+    }
+}
+
 impl Config {
     /// Load and parse the TOML config at `path`. Secrets that match
     /// `${VAR}` syntax are looked up from the process environment after
@@ -107,11 +241,16 @@ impl Config {
     ///   - blocklist of common placeholder strings (`change-me`,
     ///     `phase-0-stub`, `REPLACE_WITH`, etc.)
     ///
+    /// Finally, `bind` + `trusted_proxies` are checked together: a
+    /// non-loopback bind with no `trusted_proxies` entries refuses to
+    /// boot (see `validate_bind_policy`).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] if the file cannot be read or parsed,
-    /// if an `${VAR}` reference cannot be resolved, or if a secret
-    /// fails the strength check.
+    /// if an `${VAR}` reference cannot be resolved, if a secret fails
+    /// the strength check, or if the bind/trusted-proxy policy check
+    /// fails.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read_to_string(path).map_err(|e| Error::Config {
             reason: format!("read {}: {e}", path.display()),
@@ -132,8 +271,35 @@ impl Config {
         // HMAC keys; the blocked-pattern check is the load-bearing
         // gate against operator copy-paste mistakes.
         validate_secret_strength(&cfg.smtp.password, "smtp.password", 16)?;
+        validate_bind_policy(&cfg.bind, &cfg.trusted_proxies)?;
         Ok(cfg)
     }
+}
+
+/// Refuse to boot with a non-loopback `bind` and an empty
+/// `trusted_proxies`. A non-loopback bind means something other than
+/// this same box can reach epistole directly, which is exactly the
+/// topology `TrustedProxyExtractor` needs a peer allowlist for — a
+/// reverse proxy sits in front by design (`DEPLOY.md` step 8), and
+/// without `trusted_proxies` naming it, `X-Forwarded-For` is never
+/// honored and every visitor behind that proxy collapses onto the
+/// proxy's own address for rate-limiting purposes. A malformed `bind`
+/// is not this function's concern — the caller re-parses it and
+/// surfaces its own error.
+fn validate_bind_policy(bind: &str, trusted_proxies: &[TrustedProxyRange]) -> Result<()> {
+    let Ok(addr) = bind.parse::<std::net::SocketAddr>() else {
+        return Ok(());
+    };
+    if !addr.ip().is_loopback() && trusted_proxies.is_empty() {
+        return Err(Error::Config {
+            reason: format!(
+                "bind {bind} is not loopback and trusted_proxies is empty — a \
+                 reverse proxy is expected in front of a non-loopback bind, so \
+                 set trusted_proxies to its address(es) or bind to 127.0.0.1 / ::1"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Patterns that operator runbooks have used as fill-the-blank text in

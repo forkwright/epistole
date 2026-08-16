@@ -13,9 +13,11 @@
 //! function object is wired in.
 
 use std::io;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use epistole::token::{Token, TokenKind, sign};
 use epistole::{Store, router};
@@ -25,7 +27,17 @@ use tower::ServiceExt;
 use tracing_subscriber::fmt::MakeWriter;
 
 mod common;
-use common::test_config;
+use common::{TRUSTED_PROXY_IP, test_config};
+
+/// forkwright/epistole#67: `TrustedProxyExtractor` only honors
+/// `X-Forwarded-For` from a peer listed in `trusted_proxies`, and fails
+/// closed (500) with no verified peer at all — so every request built
+/// here needs this stamped, matching the pattern in `tests/confirm_expiry.rs`
+/// and friends, or the rate limiter (not the redaction this file tests)
+/// rejects the request before a handler ever runs.
+fn trusted_peer() -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddr::new(TRUSTED_PROXY_IP, 0))
+}
 
 /// In-memory sink for a `tracing_subscriber::fmt` writer, so a test can
 /// inspect the exact bytes a real subscriber would have shipped to the
@@ -114,6 +126,7 @@ async fn confirm_get_trace_never_records_the_token() {
         Request::builder()
             .uri(format!("/confirm?token={signed}"))
             .header("x-forwarded-for", "203.0.113.210")
+            .extension(trusted_peer())
             .body(Body::empty())
             .expect("req"),
     )
@@ -155,6 +168,7 @@ async fn unsubscribe_get_trace_never_records_the_token() {
         Request::builder()
             .uri(format!("/unsubscribe?token={signed}"))
             .header("x-forwarded-for", "203.0.113.211")
+            .extension(trusted_peer())
             .body(Body::empty())
             .expect("req"),
     )
@@ -201,6 +215,7 @@ async fn unsubscribe_one_click_trace_never_records_the_token() {
             .uri(format!("/unsubscribe/one-click?token={signed}"))
             .header("content-type", "application/x-www-form-urlencoded")
             .header("x-forwarded-for", "203.0.113.212")
+            .extension(trusted_peer())
             .body(Body::from("List-Unsubscribe=One-Click"))
             .expect("req"),
     )

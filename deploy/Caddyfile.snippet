@@ -27,6 +27,13 @@ letters.<consumer-domain> {
     # operator endpoint (/send) flow through the same reverse-proxy. /send
     # auth is enforced inside epistole, not at the proxy.
     handle {
+        # header_up REPLACES X-Forwarded-For rather than appending, so a
+        # client-supplied value never survives this hop. epistole ALSO
+        # independently verifies the connecting peer against
+        # trusted_proxies in epistole.toml before it honors this header
+        # at all (forkwright/epistole#67) — that config must list
+        # whatever address Caddy itself connects to epistole from
+        # (127.0.0.1 for this same-box topology).
         reverse_proxy 127.0.0.1:9090 {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
