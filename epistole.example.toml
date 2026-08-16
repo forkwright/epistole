@@ -28,6 +28,16 @@ token_secret = "REPLACE_WITH_BASE64_RANDOM_32"
 # Generate with: head -c 24 /dev/urandom | base64
 send_auth_token = "REPLACE_WITH_BASE64_RANDOM_24"
 
+# Bearer token the SMTP relay's bounce/complaint webhook must present.
+# Distinct from send_auth_token - a leaked webhook secret must not also
+# authorize triggering a send. Generate with: head -c 24 /dev/urandom | base64
+webhook_auth_token = "REPLACE_WITH_BASE64_RANDOM_24_WEBHOOK"
+
+# Recipient-delivery caps enforced by POST /send, rolling UTC windows.
+# Not secrets - tune to the relay plan's rate limit and list size.
+send_cap_per_hour = 500
+send_cap_per_day = 2000
+
 # Reverse-proxy peer(s) X-Forwarded-For is honored from, checked
 # against the connecting TCP peer — never the header content itself.
 # Each entry is a single address ("127.0.0.1") or a CIDR range
@@ -47,7 +57,9 @@ from_address = "letters@example.com"
 reply_to = "contact@example.com"
 
 # SMTP relay (Postmark / Mailgun / etc.). Outbound IP needs SPF / DKIM /
-# DMARC records on whichever domain the from_address belongs to.
+# DMARC records on whichever domain the from_address belongs to. Both
+# username and password are credentials (for Postmark they're the SAME
+# API token) - treat both as secrets, never paste real values here.
 [smtp]
 host = "smtp.postmarkapp.com"
 port = 587

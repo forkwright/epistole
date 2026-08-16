@@ -6,10 +6,12 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use epistole::{
     Config,
     config::{Brand, Smtp},
+    mailer::StubMailer,
 };
 use secrecy::SecretString;
 
@@ -40,11 +42,24 @@ pub fn test_config(data_dir: PathBuf) -> Config {
         smtp: Smtp {
             host: "127.0.0.1".to_owned(),
             port: 0,
-            username: "user".to_owned(),
+            username: SecretString::from("user".to_owned()),
             password: SecretString::from("pass".to_owned()),
         },
         token_secret: SecretString::from("test-secret-32-bytes-padding-aaaa".to_owned()),
         send_auth_token: SecretString::from("operator-bearer-test".to_owned()),
+        webhook_auth_token: SecretString::from("webhook-bearer-test".to_owned()),
+        send_cap_per_hour: 500,
+        send_cap_per_day: 2000,
         trusted_proxies: vec![TRUSTED_PROXY_IP.into()],
     }
+}
+
+/// A fresh [`StubMailer`] that accepts every message. Each call returns
+/// an independent instance — one test's send count never leaks into
+/// another's. Returns the concrete type (not `Arc<dyn Mailer>`) so a
+/// caller can keep its own clone and later call `.sent_count()`; passing
+/// it straight to `router()` coerces to the trait object automatically.
+#[must_use]
+pub fn test_mailer() -> Arc<StubMailer> {
+    Arc::new(StubMailer::accepting())
 }

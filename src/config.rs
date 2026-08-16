@@ -37,6 +37,20 @@ pub struct Config {
     pub token_secret: SecretString,
     /// Bearer token required for `/send`. Operator-only.
     pub send_auth_token: SecretString,
+    /// Bearer token required for `/webhooks/delivery-events`. Distinct
+    /// from `send_auth_token` on purpose: the caller here is the SMTP
+    /// relay's webhook system, a different trust boundary than the
+    /// operator who triggers `/send` — a leaked webhook secret must not
+    /// also grant send authority.
+    pub webhook_auth_token: SecretString,
+    /// Maximum recipient deliveries `/send` will attempt within a
+    /// rolling UTC hour, across every send. Protects relay reputation
+    /// (most providers throttle or suspend accounts on a delivery burst)
+    /// and caps blast radius if a send is triggered by mistake.
+    pub send_cap_per_hour: u64,
+    /// Maximum recipient deliveries `/send` will attempt within a
+    /// rolling UTC day, across every send.
+    pub send_cap_per_day: u64,
     /// Reverse-proxy peers `X-Forwarded-For` is honored from — each
     /// entry a single address (`"127.0.0.1"`) or a CIDR range
     /// (`"10.0.0.0/24"`) for a proxy pool that doesn't present one
@@ -61,6 +75,9 @@ impl std::fmt::Debug for Config {
             .field("smtp", &self.smtp)
             .field("token_secret", &"<redacted>")
             .field("send_auth_token", &"<redacted>")
+            .field("webhook_auth_token", &"<redacted>")
+            .field("send_cap_per_hour", &self.send_cap_per_hour)
+            .field("send_cap_per_day", &self.send_cap_per_day)
             .field("trusted_proxies", &self.trusted_proxies)
             .finish()
     }
@@ -86,8 +103,10 @@ pub struct Smtp {
     pub host: String,
     /// Submission port (typically 587 with STARTTLS, or 465 for implicit TLS).
     pub port: u16,
-    /// Relay account username (often the same as the API token for Postmark).
-    pub username: String,
+    /// Relay account username. Treated as a credential, not an
+    /// identifier: for Postmark it IS the API token (identical value to
+    /// `password`), so it carries the same sensitivity (forkwright/epistole#42).
+    pub username: SecretString,
     /// Relay account password / API token.
     pub password: SecretString,
 }
@@ -97,7 +116,7 @@ impl std::fmt::Debug for Smtp {
         f.debug_struct("Smtp")
             .field("host", &self.host)
             .field("port", &self.port)
-            .field("username", &self.username)
+            .field("username", &"<redacted>")
             .field("password", &"<redacted>")
             .finish()
     }
@@ -229,17 +248,22 @@ impl Config {
     /// the file can be world-readable (or at least file-system-shared)
     /// while real credentials live in `/etc/epistole.env` (0600 root).
     ///
-    /// Substitution is intentionally narrow: only `token_secret`,
-    /// `send_auth_token`, and `smtp.password` are env-resolved. Other
-    /// fields are taken verbatim. A value that doesn't look like
-    /// `${VAR}` is used as-is.
+    /// Substitution is intentionally narrow: only the five secret fields
+    /// (`token_secret`, `send_auth_token`, `webhook_auth_token`,
+    /// `smtp.username`, `smtp.password`) are env-resolved. Other fields
+    /// are taken verbatim. A value that doesn't look like `${VAR}` is
+    /// used as-is.
     ///
     /// After resolution, secret strength is validated:
     ///   - `token_secret` — minimum 32 bytes (`HMAC-SHA256` keys should
     ///     match the digest's 32-byte security parameter)
-    ///   - `send_auth_token` — minimum 24 bytes
+    ///   - `send_auth_token`, `webhook_auth_token` — minimum 24 bytes
+    ///   - `smtp.password` — minimum 16 bytes, `smtp.username` — minimum
+    ///     8 bytes (forkwright/epistole#42)
     ///   - blocklist of common placeholder strings (`change-me`,
     ///     `phase-0-stub`, `REPLACE_WITH`, etc.)
+    ///   - `send_cap_per_hour` / `send_cap_per_day` — each at least 1,
+    ///     and the day cap at least the hour cap
     ///
     /// Finally, `bind` + `trusted_proxies` are checked together: a
     /// non-loopback bind with no `trusted_proxies` entries refuses to
@@ -260,9 +284,12 @@ impl Config {
         })?;
         cfg.token_secret = resolve_secret_env(&cfg.token_secret, "token_secret")?;
         cfg.send_auth_token = resolve_secret_env(&cfg.send_auth_token, "send_auth_token")?;
+        cfg.webhook_auth_token = resolve_secret_env(&cfg.webhook_auth_token, "webhook_auth_token")?;
+        cfg.smtp.username = resolve_secret_env(&cfg.smtp.username, "smtp.username")?;
         cfg.smtp.password = resolve_secret_env(&cfg.smtp.password, "smtp.password")?;
         validate_secret_strength(&cfg.token_secret, "token_secret", 32)?;
         validate_secret_strength(&cfg.send_auth_token, "send_auth_token", 24)?;
+        validate_secret_strength(&cfg.webhook_auth_token, "webhook_auth_token", 24)?;
         // Reaudit finding #27: smtp.password skipped strength check.
         // The example config's literal `REPLACE_WITH_POSTMARK_TOKEN`
         // would have slipped past boot. Validate it the same way as
@@ -271,6 +298,31 @@ impl Config {
         // HMAC keys; the blocked-pattern check is the load-bearing
         // gate against operator copy-paste mistakes.
         validate_secret_strength(&cfg.smtp.password, "smtp.password", 16)?;
+        // forkwright/epistole#42: smtp.username escaped every one of the
+        // checks above. Floor is lower still (8) - Mailgun's convention
+        // is `postmaster@<sending-domain>`, shorter than a relay token
+        // but still a credential the placeholder blocklist must catch.
+        validate_secret_strength(&cfg.smtp.username, "smtp.username", 8)?;
+        if cfg.send_cap_per_hour == 0 {
+            return Err(Error::Config {
+                reason: "send_cap_per_hour must be at least 1".to_owned(),
+            });
+        }
+        if cfg.send_cap_per_day == 0 {
+            return Err(Error::Config {
+                reason: "send_cap_per_day must be at least 1".to_owned(),
+            });
+        }
+        if cfg.send_cap_per_day < cfg.send_cap_per_hour {
+            return Err(Error::Config {
+                reason: format!(
+                    "send_cap_per_day ({}) is smaller than send_cap_per_hour ({}) - a daily \
+                     budget tighter than the hourly one can never be reached, which is almost \
+                     certainly a misconfiguration",
+                    cfg.send_cap_per_day, cfg.send_cap_per_hour
+                ),
+            });
+        }
         validate_bind_policy(&cfg.bind, &cfg.trusted_proxies)?;
         Ok(cfg)
     }
@@ -327,7 +379,9 @@ const BLOCKED_SECRET_SUBSTRS: &[&str] = &[
     "from step",
     "<token_secret",
     "<send_auth_token",
+    "<webhook_auth_token",
     "<smtp_password",
+    "<smtp_username",
     "<base64_random",
     "<postmark_token",
 ];

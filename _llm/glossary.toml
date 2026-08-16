@@ -45,3 +45,23 @@ canonical = true
 term = "send"
 definition = "Operator-authored newsletter issue persisted before delivery."
 canonical = true
+
+[[terms]]
+term = "send_id"
+definition = "Caller-supplied ULID identifying one POST /send call. Not minted server-side - it is the idempotency key: retrying the same send_id resumes a partial fan-out (skips recipients that already have a Delivery row) instead of re-sending everyone."
+canonical = true
+
+[[terms]]
+term = "delivery"
+definition = "Per-recipient outcome row keyed <send_id>/<email>: Queued, Sent, Failed, Bounced, or Complained, with a timestamp and optional error. The ledger POST /send writes to and POST /webhooks/delivery-events updates in place."
+canonical = true
+
+[[terms]]
+term = "send cap"
+definition = "The hourly and daily ceiling on recipient deliveries POST /send will attempt, tracked as rolling UTC-window counters. A recipient not admitted under the cap is deferred, not dropped - retrying the same send_id later resumes them."
+canonical = true
+
+[[terms]]
+term = "suppression"
+definition = "Flipping an Active subscriber to Unsubscribed (with a consent-generation bump) in response to a spam complaint or a hard bounce reported via POST /webhooks/delivery-events - the same state transition a visitor's own unsubscribe click produces, triggered by a relay-authenticated system event instead."
+canonical = true

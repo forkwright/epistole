@@ -19,6 +19,7 @@ const RUNBOOK: &str = include_str!("../DEPLOY.md");
 /// Secrets that clear the strength floors and miss every blocked pattern.
 const TOKEN_SECRET: &str = "Zx7Qv2Lm9Kd4Rt8Wn1Yb6Hf3Jc5Pg0Su";
 const SEND_AUTH_TOKEN: &str = "Vb3Nm8Qw1Ei6Rt9Yu2Io5Pa7";
+const WEBHOOK_AUTH_TOKEN: &str = "Ce4Ht9Ok2Sw5Xz8Bd1Fg6Ju3";
 const SMTP_PASSWORD: &str = "Kd9Fh2Lq7Zx4Cv1Bn6Mw3Jt8";
 
 /// The shipped example with its placeholders filled in, as step 5 of the
@@ -26,6 +27,7 @@ const SMTP_PASSWORD: &str = "Kd9Fh2Lq7Zx4Cv1Bn6Mw3Jt8";
 fn filled_example() -> String {
     EXAMPLE_TOML
         .replace("REPLACE_WITH_BASE64_RANDOM_32", TOKEN_SECRET)
+        .replace("REPLACE_WITH_BASE64_RANDOM_24_WEBHOOK", WEBHOOK_AUTH_TOKEN)
         .replace("REPLACE_WITH_BASE64_RANDOM_24", SEND_AUTH_TOKEN)
         .replace("REPLACE_WITH_POSTMARK_TOKEN", SMTP_PASSWORD)
 }

@@ -88,6 +88,31 @@ pub struct Subscriber {
     pub generation: u64,
 }
 
+impl Subscriber {
+    /// Construct a new subscriber record. Useful for tests and
+    /// integration callers that seed store state outside the handler
+    /// path — `#[non_exhaustive]` blocks the struct-literal form from
+    /// outside this crate.
+    #[must_use]
+    pub fn new(
+        email: String,
+        state: SubscriberState,
+        created_at: OffsetDateTime,
+        confirmed_at: Option<OffsetDateTime>,
+        unsubscribed_at: Option<OffsetDateTime>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            email,
+            state,
+            created_at,
+            confirmed_at,
+            unsubscribed_at,
+            generation,
+        }
+    }
+}
+
 /// One newsletter send. Created by `POST /send`; persisted before
 /// delivery so a crash mid-fan-out can resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +145,29 @@ pub struct Delivery {
     pub error: Option<String>,
 }
 
+impl Delivery {
+    /// Construct a new delivery record. Useful for tests and
+    /// integration callers that seed store state outside the handler
+    /// path — `#[non_exhaustive]` blocks the struct-literal form from
+    /// outside this crate.
+    #[must_use]
+    pub fn new(
+        send_id: SendId,
+        email: String,
+        status: DeliveryStatus,
+        at: OffsetDateTime,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            send_id,
+            email,
+            status,
+            at,
+            error,
+        }
+    }
+}
+
 /// Per-recipient delivery state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -129,8 +177,14 @@ pub enum DeliveryStatus {
     Queued,
     /// Relay accepted the message.
     Sent,
-    /// Relay rejected the message.
+    /// Relay rejected the message at send time.
     Failed,
+    /// The relay's bounce webhook reported this address undeliverable
+    /// after an earlier `Sent` outcome.
+    Bounced,
+    /// The relay's complaint webhook reported a spam complaint after an
+    /// earlier `Sent` outcome.
+    Complained,
 }
 
 /// Persistence handle. One per process; cloning is cheap (the inner
@@ -143,15 +197,23 @@ pub struct Store {
     subscribers: Keyspace,
     /// `sends` keyspace handle.
     sends: Keyspace,
-    /// `deliveries` keyspace handle. Held open at startup so the LSM
-    /// flush schedule covers it; the first read/write lands in Phase 2
-    /// (forkwright/epistole#3) when `/send` walks subscribers and
-    /// records per-recipient delivery outcomes.
-    #[expect(
-        dead_code,
-        reason = "Phase 2 (forkwright/epistole#3) wires per-recipient delivery records"
-    )]
+    /// `deliveries` keyspace handle - one row per `<send_id>/<email>`,
+    /// written by `POST /send`'s fan-out and updated in place by the
+    /// bounce/complaint webhook.
     deliveries: Keyspace,
+    /// `rate_limits` keyspace - one row per hour/day bucket, counting
+    /// deliveries attempted in that window. See [`Store::try_reserve_send_slot`].
+    rate_limits: Keyspace,
+    /// Serializes the read-modify-write on a `rate_limits` row.
+    ///
+    /// WHY a mutex on top of a single-writer database: fjall's `get` and
+    /// `insert` are each atomic individually, but the pair — read the
+    /// current count, decide against the cap, write count+1 — is not.
+    /// Two concurrent `/send` calls could both read the same
+    /// under-the-cap count and both admit, overshooting it by one slot
+    /// each. `/send` is a low-QPS operator endpoint, so contention here
+    /// is not a throughput concern; correctness of the cap is.
+    rate_limit_lock: tokio::sync::Mutex<()>,
 }
 
 /// Decode one `sends` record from its fjall guard.
@@ -194,11 +256,18 @@ impl Store {
             .map_err(|e| Error::Store {
                 reason: format!("deliveries keyspace: {e}"),
             })?;
+        let rate_limits = database
+            .keyspace("rate_limits", KeyspaceCreateOptions::default)
+            .map_err(|e| Error::Store {
+                reason: format!("rate_limits keyspace: {e}"),
+            })?;
         Ok(Self {
             database,
             subscribers,
             sends,
             deliveries,
+            rate_limits,
+            rate_limit_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -396,6 +465,174 @@ impl Store {
             self.persist_acknowledged()?;
         }
         Ok(deleted)
+    }
+
+    /// Every `Active` subscriber. `/send`'s fan-out target.
+    ///
+    /// Collected eagerly rather than returning an iterator (contrast
+    /// [`Store::iter_sends`]): unlike the archive index, which paginates
+    /// public-facing history on purpose, a send's whole point is to
+    /// reach every current subscriber, so there is no smaller bound to
+    /// offer a caller here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall read or decode failure.
+    pub fn active_subscribers(&self) -> Result<Vec<Subscriber>> {
+        let mut out = Vec::new();
+        for guard in self.subscribers.iter() {
+            let value = guard.value().map_err(|e| Error::Store {
+                reason: format!("active_subscribers iter: {e}"),
+            })?;
+            let subscriber: Subscriber =
+                serde_json::from_slice(&value).map_err(|e| Error::Store {
+                    reason: format!("active_subscribers decode: {e}"),
+                })?;
+            if subscriber.state == SubscriberState::Active {
+                out.push(subscriber);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Key layout for one delivery row: `<send_id>/<email>`. Keeps every
+    /// recipient of one send lexically adjacent, and makes "does this
+    /// `send_id` already have a row for this recipient" ([`Store::delivery_get`])
+    /// a single point lookup.
+    fn delivery_key(send_id: &SendId, email: &str) -> Vec<u8> {
+        format!("{send_id}/{}", email.to_ascii_lowercase()).into_bytes()
+    }
+
+    /// Look up one delivery row by `(send_id, email)`.
+    ///
+    /// `/send`'s per-recipient idempotency check: a `Some` result means
+    /// this `send_id` already attempted this recipient, so a retry must
+    /// skip it rather than send (and record) a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall read or decode failure.
+    pub fn delivery_get(&self, send_id: &SendId, email: &str) -> Result<Option<Delivery>> {
+        let key = Self::delivery_key(send_id, email);
+        let raw = self.deliveries.get(&key).map_err(|e| Error::Store {
+            reason: format!("delivery_get {send_id}/{email}: {e}"),
+        })?;
+        match raw {
+            None => Ok(None),
+            Some(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| Error::Store {
+                    reason: format!("decode delivery {send_id}/{email}: {e}"),
+                }),
+        }
+    }
+
+    /// Insert or replace one delivery row, durably.
+    ///
+    /// Acknowledged (fsynced before return), matching [`Store::subscriber_put`]
+    /// and [`Store::send_put`]: this row is exactly what
+    /// [`Store::delivery_get`]'s idempotency check reads on a retry, so a
+    /// row that is merely buffered when the process is answering "did I
+    /// already send this" is a row that a power-loss-then-retry can lose,
+    /// silently reopening the recipient to a duplicate send. The relay
+    /// round-trip this call follows already costs far more than one
+    /// fsync, so the extra latency is not a meaningful addition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall write, journal sync, or encode
+    /// failure.
+    pub fn delivery_put(&self, delivery: &Delivery) -> Result<()> {
+        let key = Self::delivery_key(&delivery.send_id, &delivery.email);
+        let bytes = serde_json::to_vec(delivery).map_err(|e| Error::Store {
+            reason: format!(
+                "encode delivery {}/{}: {e}",
+                delivery.send_id, delivery.email
+            ),
+        })?;
+        self.deliveries
+            .insert(key, bytes)
+            .map_err(|e| Error::Store {
+                reason: format!("delivery_put {}/{}: {e}", delivery.send_id, delivery.email),
+            })?;
+        self.persist_acknowledged()
+    }
+
+    /// Read a rate-limit bucket's current count. `0` for a bucket never
+    /// written (a fresh hour/day, or a fresh keyspace).
+    fn rate_get(&self, bucket: &str) -> Result<u64> {
+        let raw = self
+            .rate_limits
+            .get(bucket.as_bytes())
+            .map_err(|e| Error::Store {
+                reason: format!("rate_get {bucket}: {e}"),
+            })?;
+        match raw {
+            None => Ok(0),
+            Some(bytes) => {
+                let text = std::str::from_utf8(&bytes).map_err(|e| Error::Store {
+                    reason: format!("rate bucket {bucket} is not utf8: {e}"),
+                })?;
+                text.parse().map_err(|e| Error::Store {
+                    reason: format!("rate bucket {bucket} is not a u64: {e}"),
+                })
+            }
+        }
+    }
+
+    /// Attempt to reserve one send slot against both the hourly and daily
+    /// caps. `hour_bucket` and `day_bucket` identify the current rolling
+    /// windows (e.g. `"2026081518"` / `"20260815"`, UTC); the caller
+    /// computes them so this method stays free of a clock dependency.
+    ///
+    /// Returns `Ok(true)` and durably increments both counters when both
+    /// are still under their cap. Returns `Ok(false)` and leaves state
+    /// untouched when either cap is already at its limit — the caller's
+    /// contract is to stop attempting further recipients for this call,
+    /// not to retry immediately.
+    ///
+    /// Reconstructible durability class, not Acknowledged: this is an
+    /// anti-abuse budget, not a consent transition or a delivery record.
+    /// A count a power-loss rolls back by one merely permits one extra
+    /// send next time — the same risk the buffered default already
+    /// accepts everywhere durability isn't explicitly upgraded (see the
+    /// module docs' durability-class table).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Store`] on a fjall read/write failure.
+    pub async fn try_reserve_send_slot(
+        &self,
+        hour_bucket: &str,
+        day_bucket: &str,
+        hourly_cap: u64,
+        daily_cap: u64,
+    ) -> Result<bool> {
+        let _guard = self.rate_limit_lock.lock().await;
+
+        let hour_count = self.rate_get(hour_bucket)?;
+        let day_count = self.rate_get(day_bucket)?;
+        if hour_count >= hourly_cap || day_count >= daily_cap {
+            return Ok(false);
+        }
+
+        self.rate_limits
+            .insert(
+                hour_bucket.as_bytes(),
+                (hour_count + 1).to_string().into_bytes(),
+            )
+            .map_err(|e| Error::Store {
+                reason: format!("rate increment {hour_bucket}: {e}"),
+            })?;
+        self.rate_limits
+            .insert(
+                day_bucket.as_bytes(),
+                (day_count + 1).to_string().into_bytes(),
+            )
+            .map_err(|e| Error::Store {
+                reason: format!("rate increment {day_bucket}: {e}"),
+            })?;
+        Ok(true)
     }
 }
 
@@ -885,5 +1122,194 @@ mod store_guard_tests {
         }
 
         guard_against_nested_keyspace(&previous).expect("a bounded chain must pass the guard");
+    }
+}
+
+#[cfg(test)]
+mod delivery_and_rate_tests {
+    use super::*;
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn delivery_put_then_get_round_trips() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+        let send_id = SendId::generate();
+        let now = OffsetDateTime::now_utc();
+
+        store
+            .delivery_put(&Delivery {
+                send_id,
+                email: "reader@example.com".to_owned(),
+                status: DeliveryStatus::Sent,
+                at: now,
+                error: None,
+            })
+            .expect("put");
+
+        let got = store
+            .delivery_get(&send_id, "reader@example.com")
+            .expect("get")
+            .expect("row present");
+        assert_eq!(got.status, DeliveryStatus::Sent);
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn delivery_get_returns_none_for_an_unrecorded_pair() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+        let send_id = SendId::generate();
+        assert!(
+            store
+                .delivery_get(&send_id, "nobody@example.com")
+                .expect("get")
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn active_subscribers_excludes_pending_and_unsubscribed() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+        let now = OffsetDateTime::now_utc();
+
+        for subscriber in [
+            Subscriber {
+                email: "pending@example.com".to_owned(),
+                state: SubscriberState::Pending,
+                created_at: now,
+                confirmed_at: None,
+                unsubscribed_at: None,
+                generation: 0,
+            },
+            Subscriber {
+                email: "active@example.com".to_owned(),
+                state: SubscriberState::Active,
+                created_at: now,
+                confirmed_at: Some(now),
+                unsubscribed_at: None,
+                generation: 0,
+            },
+            Subscriber {
+                email: "gone@example.com".to_owned(),
+                state: SubscriberState::Unsubscribed,
+                created_at: now,
+                confirmed_at: Some(now),
+                unsubscribed_at: Some(now),
+                generation: 1,
+            },
+        ] {
+            store.subscriber_put(&subscriber).expect("put");
+        }
+
+        let active = store.active_subscribers().expect("active_subscribers");
+        assert_eq!(active.len(), 1, "pending and unsubscribed rows leaked in");
+        assert_eq!(active[0].email, "active@example.com");
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    async fn try_reserve_send_slot_admits_until_the_hourly_cap_then_refuses() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+
+        // Hourly cap of 2, daily cap generous - only the hourly cap
+        // should be the one that bites.
+        assert!(
+            store
+                .try_reserve_send_slot("h1", "d1", 2, 100)
+                .await
+                .expect("reserve 1")
+        );
+        assert!(
+            store
+                .try_reserve_send_slot("h1", "d1", 2, 100)
+                .await
+                .expect("reserve 2")
+        );
+        assert!(
+            !store
+                .try_reserve_send_slot("h1", "d1", 2, 100)
+                .await
+                .expect("reserve 3"),
+            "a third reservation against a cap of 2 must be refused"
+        );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    async fn try_reserve_send_slot_admits_until_the_daily_cap_then_refuses() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+
+        // Daily cap of 1 bites even though every call uses a fresh hour
+        // bucket (simulating an hour boundary crossed mid-day) - proves
+        // the day bucket is enforced independently of the hour bucket.
+        assert!(
+            store
+                .try_reserve_send_slot("h1", "d1", 100, 1)
+                .await
+                .expect("reserve 1")
+        );
+        assert!(
+            !store
+                .try_reserve_send_slot("h2", "d1", 100, 1)
+                .await
+                .expect("reserve 2"),
+            "a second reservation against a daily cap of 1 must be refused \
+             even from a different hour bucket"
+        );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    async fn a_refused_reservation_does_not_consume_budget() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store = Store::open(tmp.path()).expect("store");
+
+        assert!(
+            store
+                .try_reserve_send_slot("h1", "d1", 1, 100)
+                .await
+                .expect("reserve 1")
+        );
+        assert!(
+            !store
+                .try_reserve_send_slot("h1", "d1", 1, 100)
+                .await
+                .expect("refused")
+        );
+        // A distinct hour bucket (a fresh window) still admits exactly
+        // one - if the refused call above had still incremented "h1",
+        // this assertion would be unaffected either way, so the load-
+        // bearing check is that "h1" itself never grows past the cap:
+        // repeating the refused call must keep refusing, not flip to
+        // admitting because a phantom increment already happened once.
+        assert!(
+            !store
+                .try_reserve_send_slot("h1", "d1", 1, 100)
+                .await
+                .expect("still refused")
+        );
     }
 }

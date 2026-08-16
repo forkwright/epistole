@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use epistole::{Store, router};
+use epistole::{SendId, Store, router};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::test_config;
+use common::{test_config, test_mailer};
 
 #[tokio::test]
 #[expect(
@@ -24,7 +24,11 @@ async fn send_bounds_the_subject_length_at_the_cap() {
     // everything.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     // 201 bytes — one past the cap — is refused.
     let over = "a".repeat(201);
@@ -37,7 +41,8 @@ async fn send_bounds_the_subject_length_at_the_cap() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer operator-bearer-test")
                 .body(Body::from(format!(
-                    "{{\"subject\":\"{over}\",\"markdown\":\"# body\"}}"
+                    "{{\"send_id\":\"{}\",\"subject\":\"{over}\",\"markdown\":\"# body\"}}",
+                    SendId::generate()
                 )))
                 .expect("req"),
         )
@@ -59,7 +64,8 @@ async fn send_bounds_the_subject_length_at_the_cap() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer operator-bearer-test")
                 .body(Body::from(format!(
-                    "{{\"subject\":\"{at_limit}\",\"markdown\":\"# body\"}}"
+                    "{{\"send_id\":\"{}\",\"subject\":\"{at_limit}\",\"markdown\":\"# body\"}}",
+                    SendId::generate()
                 )))
                 .expect("req"),
         )

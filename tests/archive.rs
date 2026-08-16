@@ -6,13 +6,13 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
-use epistole::{Store, router};
+use epistole::{SendId, Store, router};
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{TRUSTED_PROXY_IP, test_config};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
 
 /// `/archive` and `/archive/{send_id}` sit inside `public_routes`,
 /// behind the per-IP `GovernorLayer`, so a request needs a trusted-proxy
@@ -31,11 +31,18 @@ fn trusted_peer() -> ConnectInfo<SocketAddr> {
 async fn archive_lists_sends_and_links_to_detail_pages() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let mut send_ids = Vec::new();
     for subject in ["First note", "Second note"] {
-        let payload = format!("{{\"subject\":\"{subject}\",\"markdown\":\"# {subject}\"}}");
+        let send_id = SendId::generate();
+        let payload = format!(
+            "{{\"send_id\":\"{send_id}\",\"subject\":\"{subject}\",\"markdown\":\"# {subject}\"}}"
+        );
         let resp = app
             .clone()
             .oneshot(
@@ -99,7 +106,11 @@ async fn archive_lists_sends_and_links_to_detail_pages() {
 async fn archive_detail_renders_send_body_with_immutable_cache() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .clone()
@@ -110,9 +121,10 @@ async fn archive_detail_renders_send_body_with_immutable_cache() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer operator-bearer-test")
                 .header("x-forwarded-for", "203.0.113.72")
-                .body(Body::from(
-                    "{\"subject\":\"Archive detail\",\"markdown\":\"## Body\\n\\n[link](https://example.com)\"}",
-                ))
+                .body(Body::from(format!(
+                    "{{\"send_id\":\"{}\",\"subject\":\"Archive detail\",\"markdown\":\"## Body\\n\\n[link](https://example.com)\"}}",
+                    SendId::generate(),
+                )))
                 .expect("req"),
         )
         .await
@@ -157,7 +169,11 @@ async fn archive_detail_renders_send_body_with_immutable_cache() {
 async fn archive_detail_returns_404_for_missing_send() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -185,12 +201,19 @@ async fn archive_index_caps_the_page_and_reports_the_truncation() {
     // the page says it is showing only the most recent ones.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     // Two past the 100-record cap, so the two oldest must be excluded.
     // Send ids are ULIDs, so insertion order is also archive order.
     for i in 0..102 {
-        let payload = format!("{{\"subject\":\"Note {i:03}\",\"markdown\":\"# body\"}}");
+        let send_id = SendId::generate();
+        let payload = format!(
+            "{{\"send_id\":\"{send_id}\",\"subject\":\"Note {i:03}\",\"markdown\":\"# body\"}}"
+        );
         let resp = app
             .clone()
             .oneshot(

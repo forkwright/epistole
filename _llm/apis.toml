@@ -61,4 +61,9 @@ purpose = "Render public newsletter archive."
 [[http_routes]]
 method = "POST"
 path = "/send"
-purpose = "Auth-gated operator send endpoint."
+purpose = "Auth-gated operator send endpoint. send_id is caller-supplied (the idempotency key, not minted server-side); mints a per-recipient unsubscribe token, delivers via the SMTP relay, records one Delivery ledger row per recipient, enforces the hourly/daily send caps."
+
+[[http_routes]]
+method = "POST"
+path = "/webhooks/delivery-events"
+purpose = "Bearer-gated bounce/complaint ingestion, authenticated by its own webhook_auth_token (distinct from send_auth_token). Updates the delivery ledger; a complaint or hard bounce suppresses the subscriber (Active -> Unsubscribed)."

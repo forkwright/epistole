@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{TRUSTED_PROXY_IP, test_config};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
 
 /// `/confirm` sits behind the per-IP `GovernorLayer`; see
 /// `tests/integration.rs`'s copy of this helper for the full rationale.
@@ -37,7 +37,7 @@ async fn expired_confirm_token_is_refused_and_creates_no_subscriber() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // Mint a Confirm token that expired an hour ago. Everything else
     // about it is valid: correct kind, correct signature, live secret,

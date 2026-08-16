@@ -27,7 +27,7 @@ use tower::ServiceExt;
 use tracing_subscriber::fmt::MakeWriter;
 
 mod common;
-use common::{TRUSTED_PROXY_IP, test_config};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
 
 /// forkwright/epistole#67: `TrustedProxyExtractor` only honors
 /// `X-Forwarded-For` from a peer listed in `trusted_proxies`, and fails
@@ -115,7 +115,7 @@ async fn confirm_get_trace_never_records_the_token() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(store, Arc::clone(&cfg));
+    let app = router(store, Arc::clone(&cfg), test_mailer());
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = Token::new(TokenKind::Confirm, SENTINEL_EMAIL.to_owned(), now + 3600, 0);
@@ -152,7 +152,7 @@ async fn unsubscribe_get_trace_never_records_the_token() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(store, Arc::clone(&cfg));
+    let app = router(store, Arc::clone(&cfg), test_mailer());
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tok = Token::new(
@@ -194,7 +194,7 @@ async fn unsubscribe_one_click_trace_never_records_the_token() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(store, Arc::clone(&cfg));
+    let app = router(store, Arc::clone(&cfg), test_mailer());
 
     // RFC 8058: the token rides the URL (the `List-Unsubscribe` mail
     // header carries it), while the POST body is the fixed one-click

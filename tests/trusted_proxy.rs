@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{TRUSTED_PROXY_IP, test_config};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
 
 /// An untrusted direct peer's address — anything other than
 /// `TRUSTED_PROXY_IP`. `test_config()` never lists this in
@@ -60,7 +60,11 @@ async fn rate_limit_keys_on_last_xff_entry_only() {
     // at all, where the header is ignored outright.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let mut last_status = StatusCode::OK;
     for i in 0..8u32 {
@@ -107,7 +111,11 @@ async fn untrusted_peer_rotating_xff_does_not_evade_its_own_rate_limit() {
     // same real peer still trips the burst limit.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let mut last_status = StatusCode::OK;
     for i in 0..8u32 {
@@ -151,7 +159,11 @@ async fn two_untrusted_peers_sharing_a_forged_xff_get_independent_buckets() {
 
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     // Peer A burns its whole budget (6 allowed, 7th 429s) under the
     // shared forged header.
@@ -216,7 +228,11 @@ async fn trusted_peer_with_no_xff_still_rate_limits_on_its_own_address() {
     // it falls back to keying on the trusted peer's own address.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let mut last_status = StatusCode::OK;
     for i in 0..7u32 {
@@ -257,7 +273,11 @@ async fn request_with_no_connect_info_and_no_xff_is_refused() {
     // the boundary condition, not a reachable production path.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -301,7 +321,7 @@ async fn cidr_range_peers_that_are_not_the_literal_entry_are_still_trusted() {
             .parse::<TrustedProxyRange>()
             .expect("cidr"),
     ];
-    let app = router(store, Arc::new(config));
+    let app = router(store, Arc::new(config), test_mailer());
 
     let mut peer_a_last_status = StatusCode::OK;
     for i in 0..7u32 {
@@ -372,7 +392,11 @@ async fn ipv4_mapped_ipv6_peer_still_matches_a_plain_ipv4_trusted_entry() {
 
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let mut plain_form_last_status = StatusCode::OK;
     for i in 0..7u32 {

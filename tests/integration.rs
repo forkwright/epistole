@@ -8,13 +8,13 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
-use epistole::{Store, router};
+use epistole::{SendId, Store, router};
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{TRUSTED_PROXY_IP, test_config};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
 
 /// The `ConnectInfo` extension axum's `into_make_service_with_connect_info`
 /// injects in production (see `src/main.rs`). Tests call the router
@@ -57,7 +57,11 @@ fn post_form(uri: &str, xff: &str, form_body: String) -> Request<Body> {
 async fn healthz_returns_ok() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -84,7 +88,7 @@ async fn subscribe_then_confirm_round_trip() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // POST /subscribe
     let resp = app
@@ -181,7 +185,11 @@ async fn subscribe_then_confirm_round_trip() {
 async fn subscribe_rate_limit_kicks_in_under_burst() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     // Burst budget is 6; 7th from same IP should be 429.
     let mut last_status = StatusCode::OK;
@@ -214,7 +222,11 @@ async fn subscribe_rate_limit_kicks_in_under_burst() {
 async fn subscribe_body_limit_rejects_oversized_post() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     // SUBSCRIBE_BODY_LIMIT is 4 KiB; send 8 KiB.
     let oversized = "a".repeat(8 * 1024);
@@ -243,7 +255,11 @@ async fn subscribe_body_limit_rejects_oversized_post() {
 async fn send_with_correct_bearer_succeeds() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -253,9 +269,10 @@ async fn send_with_correct_bearer_succeeds() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer operator-bearer-test")
                 .header("x-forwarded-for", "203.0.113.99")
-                .body(Body::from(
-                    "{\"subject\":\"Hello\",\"markdown\":\"# Hi\\n\\nbody\"}",
-                ))
+                .body(Body::from(format!(
+                    "{{\"send_id\":\"{}\",\"subject\":\"Hello\",\"markdown\":\"# Hi\\n\\nbody\"}}",
+                    SendId::generate()
+                )))
                 .expect("req"),
         )
         .await
@@ -271,7 +288,11 @@ async fn send_with_correct_bearer_succeeds() {
 async fn send_with_wrong_bearer_returns_401() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -297,7 +318,11 @@ async fn send_with_wrong_bearer_returns_401() {
 async fn send_requires_bearer() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -334,7 +359,7 @@ async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token()
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // 1. POST /subscribe
     let _ = app
@@ -431,7 +456,11 @@ async fn subscribe_rejects_display_name_mailbox_form() {
     // submit `Pwned <victim@example.com>` and email-bomb the victim.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(
@@ -484,7 +513,7 @@ async fn stateless_confirm_with_no_subscriber_creates_active_row() {
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     // Mint a valid confirm token for an address that's never been
     // persisted — generation 0, the same baseline mint_confirm_token
@@ -538,9 +567,10 @@ async fn send_javascript_url_in_markdown_is_sanitized() {
     let app = router(
         Arc::clone(&store),
         Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
     );
 
-    let payload = r#"{"subject":"x","markdown":"[click](javascript:alert(1)) and [also](data:text/html,evil)"}"#;
+    let payload = r#"{"send_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","subject":"x","markdown":"[click](javascript:alert(1)) and [also](data:text/html,evil)"}"#;
     let resp = app
         .oneshot(
             Request::builder()
@@ -588,7 +618,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
     let cfg = Arc::new(test_config(tmp.path().to_path_buf()));
-    let app = router(Arc::clone(&store), Arc::clone(&cfg));
+    let app = router(Arc::clone(&store), Arc::clone(&cfg), test_mailer());
 
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let confirm_signed = epistole::token::sign(
@@ -725,7 +755,11 @@ async fn send_unauth_does_not_parse_body() {
     // garbage input.
     let tmp = TempDir::new().expect("tempdir");
     let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(store, Arc::new(test_config(tmp.path().to_path_buf())));
+    let app = router(
+        store,
+        Arc::new(test_config(tmp.path().to_path_buf())),
+        test_mailer(),
+    );
 
     let resp = app
         .oneshot(

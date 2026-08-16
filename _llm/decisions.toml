@@ -9,6 +9,10 @@ source_docs = [
   "src/token.rs",
   "src/handlers/confirm.rs",
   "src/handlers/unsubscribe.rs",
+  "src/handlers/send.rs",
+  "src/handlers/webhooks.rs",
+  "src/mailer.rs",
+  "src/store.rs",
 ]
 
 [decisions]
@@ -51,5 +55,29 @@ id = "D-smtp-relay"
 title = "Deliver through SMTP relay"
 status = "accepted"
 context = "DKIM/SPF/DMARC deliverability belongs to a mail relay, not the app host."
-decision = "Use lettre against Postmark or Mailgun."
-consequences = "Epistole owns subscriber workflow while relay infrastructure handles outbound reputation."
+decision = "Use lettre's AsyncSmtpTransport against Postmark or Mailgun, chosen via config.smtp - relay() (implicit TLS) when the configured port is 465, starttls_relay() otherwise, matching both providers' documented 587/STARTTLS default."
+consequences = "Epistole owns subscriber workflow while relay infrastructure handles outbound reputation. Outbound mail composition depends on a Mailer trait, not lettre's transport types directly, so tests substitute an in-memory double instead of a live relay connection."
+
+[[decision]]
+id = "D-caller-supplied-send-id"
+title = "send_id is caller input, not server-minted"
+status = "accepted"
+context = "A retried or duplicated POST /send (client timeout, connection reset, an operator's own double-submit) must not fan out to every subscriber a second time - a send path that delivers twice on a retry is a subscriber-facing defect, not a cosmetic one."
+decision = "Body::send_id is a required field the caller supplies. The handler resolves it against the sends partition first: an unknown id starts a new fan-out and persists the Send record before attempting any recipient; a known id with matching subject/markdown reuses that record; a known id with DIFFERENT content is refused rather than silently preferring either version. Per-recipient idempotency layers on top: each recipient is skipped if a Delivery row already exists for (send_id, email), so a resumed call only attempts the recipients it hasn't reached yet."
+consequences = "A client owns retry safety by reusing the same send_id, not by epistole guessing intent from timing or content. Mid-fan-out failures (a crash, or the send cap below cutting a call short) are naturally resumable: call again with the same send_id and only the untouched recipients are attempted."
+
+[[decision]]
+id = "D-send-caps"
+title = "Hourly and daily send caps, enforced per-recipient during fan-out"
+status = "accepted"
+context = "An unbounded fan-out risks relay-account suspension (most providers throttle or cut off a delivery burst) and turns an operator mistake (wrong recipient list, accidental re-trigger) into a large blast radius."
+decision = "config.send_cap_per_hour / send_cap_per_day bound total recipient deliveries attempted in the current rolling UTC hour/day, tracked in a dedicated rate_limits keyspace and checked+incremented atomically (an in-process mutex serializes the read-modify-write, since fjall's get/insert pair is not itself atomic). A recipient not admitted is deferred (skipped for this call), not dropped - see D-caller-supplied-send-id for how a later call with the same send_id resumes them."
+consequences = "A single mis-triggered send cannot exceed the configured budget in one call. The two caps are independent counters, so crossing either one halts new admissions; Config::load refuses a daily cap smaller than the hourly one as an unreachable, almost-certainly-transposed configuration."
+
+[[decision]]
+id = "D-webhook-provider-agnostic"
+title = "Bounce/complaint webhook takes a provider-agnostic body, not Postmark's or Mailgun's native shape"
+status = "accepted"
+context = "Postmark and Mailgun each define their own bounce/complaint webhook JSON contract, and picking one relay account with real DNS/DKIM/SPF/DMARC is explicitly Phase 3 operator-credential work this crate does not do."
+decision = "POST /webhooks/delivery-events accepts {send_id, email, kind: bounce|complaint, hard}, authenticated by its own webhook_auth_token (distinct from send_auth_token - a leaked webhook secret must not also authorize triggering a send). It updates the matching Delivery row's outcome and, for a complaint or a hard bounce, suppresses the subscriber (Active -> Unsubscribed, consent generation bumped) the same way a visitor's own unsubscribe click does."
+consequences = "Wiring a real relay's native webhook requires a small translating adapter (a Cloudflare Worker, an NPM location block, or similar) in front of this endpoint - Phase 3 work, tracked as an open thread rather than blocking Phase 2. The ledger-update and suppression mechanism is complete and testable without picking a relay account."
