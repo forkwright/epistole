@@ -256,6 +256,10 @@ fn smtp_username_placeholder_is_refused() {
 
 #[test]
 #[expect(
+    unsafe_code,
+    reason = "set_var is unsafe in 2024 edition; test isolates the var"
+)]
+#[expect(
     clippy::unwrap_used,
     reason = "test scaffolding - the err path is the assertion target"
 )]
