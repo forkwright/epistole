@@ -9,6 +9,7 @@
 pub mod config;
 pub mod error;
 pub(crate) mod handlers;
+pub mod mailer;
 pub mod send_id;
 pub mod store;
 pub(crate) mod templates;
@@ -32,6 +33,7 @@ use tower_http::trace::TraceLayer;
 
 pub use config::Config;
 pub use error::{Error, Result};
+pub use mailer::Mailer;
 pub use send_id::SendId;
 pub use store::Store;
 
@@ -42,13 +44,19 @@ pub struct AppState {
     pub(crate) store: Arc<Store>,
     /// Loaded configuration.
     pub(crate) config: Arc<Config>,
+    /// Outbound mail transport.
+    pub(crate) mailer: Arc<dyn Mailer>,
 }
 
 impl AppState {
     /// Construct a new `AppState`.
     #[must_use]
-    pub fn new(store: Arc<Store>, config: Arc<Config>) -> Self {
-        Self { store, config }
+    pub fn new(store: Arc<Store>, config: Arc<Config>, mailer: Arc<dyn Mailer>) -> Self {
+        Self {
+            store,
+            config,
+            mailer,
+        }
     }
 }
 
@@ -58,6 +66,10 @@ impl AppState {
 /// pressure. Defends against memory-DoS via large POSTs.
 const SUBSCRIBE_BODY_LIMIT: usize = 4 * 1024; // 4 KiB
 const SEND_BODY_LIMIT: usize = 256 * 1024; // 256 KiB
+/// Bounds a bounce/complaint webhook POST. A `{send_id, email, kind,
+/// hard}` event is a few hundred bytes at most; 4 KiB matches
+/// `SUBSCRIBE_BODY_LIMIT` and leaves generous headroom.
+const WEBHOOK_BODY_LIMIT: usize = 4 * 1024; // 4 KiB
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Rate-limit key extractor that ONLY trusts the LAST entry of the
@@ -108,8 +120,8 @@ impl KeyExtractor for TrustedProxyExtractor {
 ///
 /// Panics at startup if the hardcoded governor rate-limit configuration
 /// is internally inconsistent (it is not; this is a defensive assertion).
-pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
-    let state = AppState::new(store, config);
+pub fn router(store: Arc<Store>, config: Arc<Config>, mailer: Arc<dyn Mailer>) -> Router {
+    let state = AppState::new(store, config, mailer);
 
     // Per-IP rate limit. Conservative budget: 6 requests over 60 seconds,
     // bursts up to 6. Newsletter forms get one POST per visitor; legitimate
@@ -178,10 +190,22 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
         .layer(DefaultBodyLimit::max(SEND_BODY_LIMIT))
         .layer(RequestBodyLimitLayer::new(SEND_BODY_LIMIT));
 
+    // The relay's bounce/complaint webhook - authenticated by its own
+    // bearer token (config.webhook_auth_token), never the operator's
+    // send_auth_token: a leaked webhook secret must not also authorize
+    // triggering a send. No per-IP rate limit, matching /send - a bad
+    // send can legitimately produce a burst of bounces the relay must
+    // still be able to report in full.
+    let webhook_routes = Router::new()
+        .route("/webhooks/delivery-events", post(handlers::webhooks::post))
+        .layer(DefaultBodyLimit::max(WEBHOOK_BODY_LIMIT))
+        .layer(RequestBodyLimitLayer::new(WEBHOOK_BODY_LIMIT));
+
     Router::new()
         .route("/healthz", get(handlers::healthz))
         .merge(public_routes)
         .merge(operator_routes)
+        .merge(webhook_routes)
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
