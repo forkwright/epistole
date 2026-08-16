@@ -14,6 +14,7 @@ pub mod store;
 pub(crate) mod templates;
 pub mod token;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,37 +61,75 @@ const SUBSCRIBE_BODY_LIMIT: usize = 4 * 1024; // 4 KiB
 const SEND_BODY_LIMIT: usize = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Rate-limit key extractor that ONLY trusts the LAST entry of the
-/// `X-Forwarded-For` header. Designed for deployment behind a single
-/// trusted reverse proxy (NPM) that sets XFF to the real client IP via
-/// `proxy_set_header X-Forwarded-For $remote_addr` (replace, not
-/// append). In that topology, the last entry is the real client IP and
-/// any earlier entries (which a hostile client can spoof) are ignored.
+/// Rate-limit key extractor that only honors `X-Forwarded-For` when the
+/// immediate TCP peer (`ConnectInfo`) is a configured trusted proxy.
+/// Any client reaching epistole directly — bypassing the proxy, or
+/// because none is configured — cannot spoof its rate-limit key by
+/// setting the header: the header is ignored outright and the key is
+/// the verified peer address instead.
 ///
-/// If XFF is missing entirely, fall back to `ConnectInfo` (the
-/// immediate peer). This handles direct connections (smoke tests,
-/// accidental bypass of NPM) without panicking.
-#[derive(Clone, Copy, Debug)]
-struct TrustedProxyExtractor;
+/// Single-hop model only: once the immediate peer is verified trusted,
+/// the LAST `X-Forwarded-For` entry is taken at face value as the real
+/// client (matching the deployed topology in `DEPLOY.md` step 8a, where
+/// the one reverse proxy REPLACES rather than appends the header). A
+/// chain of more than one trusted proxy — where an earlier hop's
+/// address would need to be read out of the middle of the list — is
+/// NOT handled; this extractor was not extended to walk an N-deep
+/// trusted chain (forkwright/epistole#67 tracked both cases and scoped
+/// the fix to the single-hop deployment that exists today).
+///
+/// If the peer is trusted but sends no `X-Forwarded-For` (misconfigured
+/// proxy, or a probe that skipped it), the key falls back to the peer's
+/// own address — a shared bucket, not a bypass. If `ConnectInfo` itself
+/// is absent (should not happen in production; see
+/// `into_make_service_with_connect_info` in `src/main.rs`), extraction
+/// fails closed rather than trusting anything the client sent.
+#[derive(Clone, Debug)]
+struct TrustedProxyExtractor {
+    trusted: Arc<[IpAddr]>,
+}
+
+impl TrustedProxyExtractor {
+    fn new(trusted_proxies: &[IpAddr]) -> Self {
+        Self {
+            trusted: trusted_proxies.into(),
+        }
+    }
+
+    fn is_trusted(&self, peer: IpAddr) -> bool {
+        self.trusted.contains(&peer)
+    }
+}
 
 impl KeyExtractor for TrustedProxyExtractor {
-    type Key = std::net::IpAddr;
+    type Key = IpAddr;
 
     fn extract<B>(
         &self,
         req: &axum::http::Request<B>,
     ) -> std::result::Result<Self::Key, GovernorError> {
+        let peer = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip())
+            .ok_or(GovernorError::UnableToExtractKey)?;
+
+        if !self.is_trusted(peer) {
+            // Peer is not a configured trusted proxy. X-Forwarded-For is
+            // fully client-controlled input from here on, so it MUST be
+            // ignored entirely — trusting it is exactly the forgery this
+            // extractor exists to close (forkwright/epistole#67).
+            return Ok(peer);
+        }
+
         if let Some(xff) = req.headers().get("x-forwarded-for")
             && let Ok(s) = xff.to_str()
             && let Some(last) = s.rsplit(',').next()
-            && let Ok(ip) = last.trim().parse::<std::net::IpAddr>()
+            && let Ok(ip) = last.trim().parse::<IpAddr>()
         {
             return Ok(ip);
         }
-        req.extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip())
-            .ok_or(GovernorError::UnableToExtractKey)
+        Ok(peer)
     }
 }
 
@@ -123,11 +162,17 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
     // client can spoof — set XFF to `1.2.3.4, 5.6.7.8, ...` and SmartIp
     // would key on `1.2.3.4`, defeating per-IP rate limiting.
     //
-    // The TrustedProxyExtractor below ONLY accepts the LAST entry of
-    // X-Forwarded-For (the value NPM most-recently appended). Combined
-    // with NPM's `proxy_set_header X-Forwarded-For $remote_addr` config
-    // (documented in DEPLOY.md step 8a), the chain is one hop and
-    // unspoofable.
+    // TrustedProxyExtractor closes that AND the deeper hole it shared
+    // with SmartIp: neither checked WHO was connecting. A request that
+    // reaches epistole directly — no proxy in between at all — used to
+    // have its X-Forwarded-For honored just the same, so any direct
+    // client could forge its own rate-limit key (forkwright/epistole#67).
+    // The extractor now only accepts the LAST X-Forwarded-For entry when
+    // the immediate peer (ConnectInfo) is listed in `config.trusted_proxies`;
+    // every other peer is keyed on its own verified address, header or
+    // not. Combined with NPM's `proxy_set_header X-Forwarded-For
+    // $remote_addr` config (documented in DEPLOY.md step 8a), the chain
+    // is one verified hop and unspoofable.
     //
     // The governor config has hardcoded values that always validate; the
     // unwrap below is defensive and triggers only on a typo at edit time.
@@ -139,7 +184,7 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
         GovernorConfigBuilder::default()
             .per_second(10) // refill: 1 token per 10s -> 6 tokens / minute
             .burst_size(6)
-            .key_extractor(TrustedProxyExtractor)
+            .key_extractor(TrustedProxyExtractor::new(&state.config.trusted_proxies))
             .finish()
             .expect("governor config valid"),
     );

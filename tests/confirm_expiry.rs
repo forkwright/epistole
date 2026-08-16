@@ -1,9 +1,11 @@
 //! Expiry handling on the `POST /confirm` surface (the commit path;
 //! `GET /confirm` never writes — see `tests/consent_contract.rs`).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use epistole::{Store, router};
 use http_body_util::BodyExt;
@@ -11,7 +13,13 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::test_config;
+use common::{TRUSTED_PROXY_IP, test_config};
+
+/// `/confirm` sits behind the per-IP `GovernorLayer`; see
+/// `tests/integration.rs`'s copy of this helper for the full rationale.
+fn trusted_peer() -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddr::new(TRUSTED_PROXY_IP, 0))
+}
 
 #[tokio::test]
 #[expect(
@@ -51,6 +59,7 @@ async fn expired_confirm_token_is_refused_and_creates_no_subscriber() {
                 .uri("/confirm")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.90")
+                .extension(trusted_peer())
                 .body(Body::from(format!("token={signed}")))
                 .expect("req"),
         )

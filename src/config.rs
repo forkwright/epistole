@@ -3,6 +3,7 @@
 //! [`secrecy::SecretString`] so they zeroize on drop and don't leak via
 //! `Debug` / `Display`.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
@@ -35,6 +36,15 @@ pub struct Config {
     pub token_secret: SecretString,
     /// Bearer token required for `/send`. Operator-only.
     pub send_auth_token: SecretString,
+    /// Reverse-proxy peer addresses `X-Forwarded-For` is honored from.
+    /// Checked against the immediate TCP peer (`ConnectInfo`), never the
+    /// header content itself. Empty (the default) means no peer is
+    /// trusted, so `X-Forwarded-For` is always ignored and the rate
+    /// limiter keys on the raw connecting peer — safe, but collapses
+    /// every visitor behind an unconfigured reverse proxy into one
+    /// bucket. See `TrustedProxyExtractor` in `src/lib.rs`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl std::fmt::Debug for Config {
@@ -47,6 +57,7 @@ impl std::fmt::Debug for Config {
             .field("smtp", &self.smtp)
             .field("token_secret", &"<redacted>")
             .field("send_auth_token", &"<redacted>")
+            .field("trusted_proxies", &self.trusted_proxies)
             .finish()
     }
 }
@@ -107,11 +118,16 @@ impl Config {
     ///   - blocklist of common placeholder strings (`change-me`,
     ///     `phase-0-stub`, `REPLACE_WITH`, etc.)
     ///
+    /// Finally, `bind` + `trusted_proxies` are checked together: a
+    /// non-loopback bind with no `trusted_proxies` entries refuses to
+    /// boot (see `validate_bind_policy`).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] if the file cannot be read or parsed,
-    /// if an `${VAR}` reference cannot be resolved, or if a secret
-    /// fails the strength check.
+    /// if an `${VAR}` reference cannot be resolved, if a secret fails
+    /// the strength check, or if the bind/trusted-proxy policy check
+    /// fails.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read_to_string(path).map_err(|e| Error::Config {
             reason: format!("read {}: {e}", path.display()),
@@ -132,8 +148,35 @@ impl Config {
         // HMAC keys; the blocked-pattern check is the load-bearing
         // gate against operator copy-paste mistakes.
         validate_secret_strength(&cfg.smtp.password, "smtp.password", 16)?;
+        validate_bind_policy(&cfg.bind, &cfg.trusted_proxies)?;
         Ok(cfg)
     }
+}
+
+/// Refuse to boot with a non-loopback `bind` and an empty
+/// `trusted_proxies`. A non-loopback bind means something other than
+/// this same box can reach epistole directly, which is exactly the
+/// topology `TrustedProxyExtractor` needs a peer allowlist for — a
+/// reverse proxy sits in front by design (`DEPLOY.md` step 8), and
+/// without `trusted_proxies` naming it, `X-Forwarded-For` is never
+/// honored and every visitor behind that proxy collapses onto the
+/// proxy's own address for rate-limiting purposes. A malformed `bind`
+/// is not this function's concern — the caller re-parses it and
+/// surfaces its own error.
+fn validate_bind_policy(bind: &str, trusted_proxies: &[IpAddr]) -> Result<()> {
+    let Ok(addr) = bind.parse::<std::net::SocketAddr>() else {
+        return Ok(());
+    };
+    if !addr.ip().is_loopback() && trusted_proxies.is_empty() {
+        return Err(Error::Config {
+            reason: format!(
+                "bind {bind} is not loopback and trusted_proxies is empty — a \
+                 reverse proxy is expected in front of a non-loopback bind, so \
+                 set trusted_proxies to its address(es) or bind to 127.0.0.1 / ::1"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Patterns that operator runbooks have used as fill-the-blank text in

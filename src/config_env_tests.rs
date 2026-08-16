@@ -1,9 +1,11 @@
 //! Tests for the `${VAR}` env-resolution + secret-strength validation
 //! paths in `Config::load`.
 
+use std::net::IpAddr;
+
 use secrecy::{ExposeSecret, SecretString};
 
-use super::{is_valid_env_ref, resolve_secret_env, validate_secret_strength};
+use super::{is_valid_env_ref, resolve_secret_env, validate_bind_policy, validate_secret_strength};
 
 #[test]
 #[expect(
@@ -183,4 +185,55 @@ fn empty_env_var_errors() {
     unsafe {
         std::env::remove_var("EPISTOLE_TEST_EMPTY");
     }
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn bind_policy_allows_loopback_with_no_trusted_proxies() {
+    validate_bind_policy("127.0.0.1:9090", &[]).expect("loopback bind needs no policy");
+    validate_bind_policy("[::1]:9090", &[]).expect("ipv6 loopback bind needs no policy");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn bind_policy_rejects_non_loopback_bind_with_no_trusted_proxies() {
+    // Issue #67 desired-correction: a public bind with an empty
+    // trusted_proxies collapses every visitor behind an unconfigured
+    // reverse proxy onto one rate-limit bucket, and silently defeats the
+    // whole point of configuring a trust boundary. Startup refuses this
+    // combination rather than booting into it quietly.
+    let err = validate_bind_policy("0.0.0.0:9090", &[]).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("trusted_proxies") && msg.contains("loopback"),
+        "expected a policy refusal naming both fields, got: {msg}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn bind_policy_allows_non_loopback_bind_once_trusted_proxies_is_set() {
+    let proxies: Vec<IpAddr> = vec!["192.168.1.10".parse().expect("ip")];
+    validate_bind_policy("192.168.1.20:9090", &proxies)
+        .expect("a declared trust policy clears a non-loopback bind");
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn bind_policy_defers_an_unparseable_bind_to_the_caller() {
+    // Not this function's job to reject a malformed bind — main.rs's
+    // own SocketAddr parse surfaces that error with its own message.
+    validate_bind_policy("not-an-address", &[]).expect("unparseable bind is not this check's job");
 }

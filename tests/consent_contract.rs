@@ -12,18 +12,23 @@
 //!   `List-Unsubscribe-Post` contract, distinct from the manual
 //!   interstitial-driven `POST /unsubscribe` (#68).
 //!
-//! Every request below sets `x-forwarded-for`: `/confirm`,
-//! `/unsubscribe`, and `/unsubscribe/one-click` all sit inside
-//! `public_routes`, which carries the per-IP `GovernorLayer`. The test
-//! harness calls the router directly via `.oneshot()` rather than
-//! through `into_make_service_with_connect_info`, so with no XFF header
-//! and no injected `ConnectInfo`, `TrustedProxyExtractor` cannot derive
-//! a rate-limit key and the request 500s before reaching the handler —
-//! see `src/main.rs`'s `into_make_service_with_connect_info` comment.
+//! Every request below sets `x-forwarded-for` AND a trusted-proxy
+//! `ConnectInfo` (via `trusted_peer()`): `/confirm`, `/unsubscribe`, and
+//! `/unsubscribe/one-click` all sit inside `public_routes`, which
+//! carries the per-IP `GovernorLayer`. `TrustedProxyExtractor` only
+//! honors `X-Forwarded-For` from a peer listed in `trusted_proxies`
+//! (forkwright/epistole#67) — the test harness calls the router
+//! directly via `.oneshot()` rather than through
+//! `into_make_service_with_connect_info`, so without an injected
+//! `ConnectInfo` there is no verified peer at all and the request 500s
+//! before reaching the handler; see `src/main.rs`'s
+//! `into_make_service_with_connect_info` comment.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use epistole::store::SubscriberState;
 use epistole::token::{Token, TokenKind, sign};
@@ -34,7 +39,14 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::test_config;
+use common::{TRUSTED_PROXY_IP, test_config};
+
+/// The `ConnectInfo` extension axum's `into_make_service_with_connect_info`
+/// injects in production — see `tests/integration.rs`'s copy of this
+/// helper for why every `tests/*.rs` file needs its own.
+fn trusted_peer() -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddr::new(TRUSTED_PROXY_IP, 0))
+}
 
 #[expect(
     clippy::expect_used,
@@ -46,6 +58,7 @@ fn post_form(uri: &str, xff: &str, form_body: String) -> Request<Body> {
         .uri(uri)
         .header("content-type", "application/x-www-form-urlencoded")
         .header("x-forwarded-for", xff)
+        .extension(trusted_peer())
         .body(Body::from(form_body))
         .expect("req")
 }
@@ -58,6 +71,7 @@ fn get(uri: &str, xff: &str) -> Request<Body> {
     Request::builder()
         .uri(uri)
         .header("x-forwarded-for", xff)
+        .extension(trusted_peer())
         .body(Body::empty())
         .expect("req")
 }
@@ -71,6 +85,7 @@ fn head(uri: &str, xff: &str) -> Request<Body> {
         .method("HEAD")
         .uri(uri)
         .header("x-forwarded-for", xff)
+        .extension(trusted_peer())
         .body(Body::empty())
         .expect("req")
 }

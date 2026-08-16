@@ -28,6 +28,15 @@ token_secret = "REPLACE_WITH_BASE64_RANDOM_32"
 # Generate with: head -c 24 /dev/urandom | base64
 send_auth_token = "REPLACE_WITH_BASE64_RANDOM_24"
 
+# Reverse-proxy peer address(es) X-Forwarded-For is honored from,
+# checked against the connecting TCP peer — never the header content
+# itself. 127.0.0.1 matches NPM on the same box (DEPLOY.md step 8a). If
+# NPM runs on a different host, use its LAN address here instead. Empty
+# or omitted means every visitor behind an unconfigured proxy collapses
+# onto one rate-limit bucket (safe, but not what you want) — see
+# TrustedProxyExtractor in src/lib.rs.
+trusted_proxies = ["127.0.0.1"]
+
 # Brand identity for outbound mail.
 [brand]
 name = "Example Brand"
