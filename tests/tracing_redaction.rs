@@ -85,7 +85,6 @@ async fn drive_and_capture(app: axum::Router, req: Request<Body>) -> (StatusCode
     let _guard = tracing::subscriber::set_default(subscriber);
     let resp = app.oneshot(req).await.expect("response");
     let status = resp.status();
-    drop(_guard);
     (status, log.as_string())
 }
 

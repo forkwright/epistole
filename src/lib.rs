@@ -114,8 +114,7 @@ fn make_span(request: &Request<Body>) -> tracing::Span {
     let route = request
         .extensions()
         .get::<MatchedPath>()
-        .map(MatchedPath::as_str)
-        .unwrap_or_else(|| request.uri().path());
+        .map_or_else(|| request.uri().path(), MatchedPath::as_str);
     tracing::debug_span!("request", method = %request.method(), route = %route)
 }
 
@@ -287,8 +286,6 @@ mod tests {
         let span = build_span();
         let _entered = span.enter();
         tracing::debug!("probe");
-        drop(_entered);
-        drop(span);
         log.as_string()
     }
 
