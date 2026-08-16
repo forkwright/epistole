@@ -49,7 +49,11 @@ fn release_workflow_has_exactly_one_publish_path() {
          be bypassed by a second call site"
     );
     assert!(
-        !RELEASE_WORKFLOW.contains("upload-release-asset"),
+        // WHY "actions/upload-release-asset" not the bare phrase: the
+        // anchore/sbom-action step below sets `upload-release-assets:
+        // false`, whose key is a substring of the bare phrase and would
+        // false-positive this check on a workflow that has no such action.
+        !RELEASE_WORKFLOW.contains("actions/upload-release-asset"),
         "found a third-party release-asset upload action -- another \
          publish path bypasses release-upload.sh's no-clobber guard"
     );

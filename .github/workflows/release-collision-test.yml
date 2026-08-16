@@ -1,7 +1,7 @@
 name: Release Collision Test
 
 # WHY(#70): tests/release_contract.rs proves the shipped release.yml and
-# scripts contain no --clobber. That is necessary but not sufficient --
+# scripts pass gh no overwrite flag. That is necessary but not sufficient --
 # it does not prove `gh release upload` actually refuses a same-name
 # re-upload against the real GitHub API. This job runs the exact shared
 # script release.yml calls (.github/scripts/release-upload.sh) against a

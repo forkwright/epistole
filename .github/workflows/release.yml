@@ -126,8 +126,8 @@ jobs:
       # generated and the checksum verified above before anything is
       # published, and both attestations are recorded against the local
       # artifact's own digest before it is uploaded anywhere. Publication
-      # goes through release-upload.sh, which carries no --clobber -- an
-      # asset-name collision on this tag is a hard error, not a silent
+      # goes through release-upload.sh, which passes gh no overwrite flag --
+      # an asset-name collision on this tag is a hard error, not a silent
       # replace, and it is the only call site that uploads a release asset
       # (see tests/release_contract.rs).
       - name: Publish binary, checksum, and SBOM
