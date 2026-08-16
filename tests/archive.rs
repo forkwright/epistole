@@ -1,8 +1,10 @@
 //! Integration tests for the public archive endpoints.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use epistole::{SendId, Store, router};
 use http_body_util::BodyExt;
@@ -10,7 +12,16 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{test_config, test_mailer};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
+
+/// `/archive` and `/archive/{send_id}` sit inside `public_routes`,
+/// behind the per-IP `GovernorLayer`, so a request needs a trusted-proxy
+/// `ConnectInfo` for `X-Forwarded-For` to be honored — see
+/// `tests/integration.rs`'s copy of this helper for the full rationale.
+/// `/send` carries no rate limiter and needs no peer at all.
+fn trusted_peer() -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddr::new(TRUSTED_PROXY_IP, 0))
+}
 
 #[tokio::test]
 #[expect(
@@ -57,6 +68,7 @@ async fn archive_lists_sends_and_links_to_detail_pages() {
             Request::builder()
                 .uri("/archive")
                 .header("x-forwarded-for", "203.0.113.71")
+                .extension(trusted_peer())
                 .body(Body::empty())
                 .expect("req"),
         )
@@ -127,6 +139,7 @@ async fn archive_detail_renders_send_body_with_immutable_cache() {
             Request::builder()
                 .uri(format!("/archive/{send_id}"))
                 .header("x-forwarded-for", "203.0.113.73")
+                .extension(trusted_peer())
                 .body(Body::empty())
                 .expect("req"),
         )
@@ -167,6 +180,7 @@ async fn archive_detail_returns_404_for_missing_send() {
             Request::builder()
                 .uri("/archive/01J00000000000000000000000")
                 .header("x-forwarded-for", "203.0.113.74")
+                .extension(trusted_peer())
                 .body(Body::empty())
                 .expect("req"),
         )
@@ -221,6 +235,7 @@ async fn archive_index_caps_the_page_and_reports_the_truncation() {
             Request::builder()
                 .uri("/archive")
                 .header("x-forwarded-for", "203.0.113.75")
+                .extension(trusted_peer())
                 .body(Body::empty())
                 .expect("req"),
         )

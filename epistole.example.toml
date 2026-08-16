@@ -38,6 +38,18 @@ webhook_auth_token = "REPLACE_WITH_BASE64_RANDOM_24_WEBHOOK"
 send_cap_per_hour = 500
 send_cap_per_day = 2000
 
+# Reverse-proxy peer(s) X-Forwarded-For is honored from, checked
+# against the connecting TCP peer — never the header content itself.
+# Each entry is a single address ("127.0.0.1") or a CIDR range
+# ("10.0.0.0/24") for a proxy pool that doesn't present one stable
+# address (e.g. behind a load balancer). 127.0.0.1 matches NPM on the
+# same box (DEPLOY.md step 8a); if NPM runs on a different host, use
+# its LAN address (or its subnet, if it isn't pinned to one address)
+# here instead. Empty or omitted means every visitor behind an
+# unconfigured proxy collapses onto one rate-limit bucket (safe, but
+# not what you want) — see TrustedProxyExtractor in src/lib.rs.
+trusted_proxies = ["127.0.0.1"]
+
 # Brand identity for outbound mail.
 [brand]
 name = "Example Brand"

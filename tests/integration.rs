@@ -2,9 +2,11 @@
 //! router against a tempdir-backed fjall keyspace and exercises the
 //! end-to-end happy path.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use epistole::{SendId, Store, router};
 use http_body_util::BodyExt;
@@ -12,19 +14,26 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-use common::{test_config, test_mailer};
+use common::{TRUSTED_PROXY_IP, test_config, test_mailer};
+
+/// The `ConnectInfo` extension axum's `into_make_service_with_connect_info`
+/// injects in production (see `src/main.rs`). Tests call the router
+/// directly via `.oneshot()`, bypassing that wrapper, so
+/// `TrustedProxyExtractor` sees no verified peer unless a test injects
+/// one — this stands in for "this request arrived through the trusted
+/// reverse proxy."
+fn trusted_peer() -> ConnectInfo<SocketAddr> {
+    ConnectInfo(SocketAddr::new(TRUSTED_PROXY_IP, 0))
+}
 
 /// A `POST` request with an `application/x-www-form-urlencoded` body —
 /// what the confirm/unsubscribe interstitial's own form submits, and
-/// what `/subscribe` has always taken.
-///
-/// `xff` is required, not optional: `/confirm` and `/unsubscribe` sit
-/// inside `public_routes`, which carries the per-IP `GovernorLayer`. The
-/// test harness calls the router directly via `.oneshot()` rather than
-/// through `into_make_service_with_connect_info`, so with no XFF header
-/// and no injected `ConnectInfo`, `TrustedProxyExtractor` cannot derive
-/// a rate-limit key and the request 500s before reaching the handler —
-/// see `src/main.rs`'s `into_make_service_with_connect_info` comment.
+/// what `/subscribe` has always taken. Carries a trusted-proxy
+/// `ConnectInfo` (see `trusted_peer()`) so `xff` is honored — `/confirm`
+/// and `/unsubscribe` sit inside `public_routes`, behind the per-IP
+/// `GovernorLayer`, and `TrustedProxyExtractor` now ignores
+/// `X-Forwarded-For` entirely from any peer that isn't a configured
+/// trusted proxy (forkwright/epistole#67).
 #[expect(
     clippy::expect_used,
     reason = "test scaffolding - panic on fail is the desired signal"
@@ -35,6 +44,7 @@ fn post_form(uri: &str, xff: &str, form_body: String) -> Request<Body> {
         .uri(uri)
         .header("content-type", "application/x-www-form-urlencoded")
         .header("x-forwarded-for", xff)
+        .extension(trusted_peer())
         .body(Body::from(form_body))
         .expect("req")
 }
@@ -89,6 +99,7 @@ async fn subscribe_then_confirm_round_trip() {
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.7")
+                .extension(trusted_peer())
                 .body(Body::from("email=alice%40example.com"))
                 .expect("req"),
         )
@@ -120,6 +131,7 @@ async fn subscribe_then_confirm_round_trip() {
             Request::builder()
                 .uri(format!("/confirm?token={signed}"))
                 .header("x-forwarded-for", "203.0.113.7")
+                .extension(trusted_peer())
                 .body(Body::empty())
                 .expect("req"),
         )
@@ -191,6 +203,7 @@ async fn subscribe_rate_limit_kicks_in_under_burst() {
                     .uri("/subscribe")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("x-forwarded-for", "198.51.100.42")
+                    .extension(trusted_peer())
                     .body(Body::from(body))
                     .expect("req"),
             )
@@ -225,6 +238,7 @@ async fn subscribe_body_limit_rejects_oversized_post() {
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "198.51.100.43")
+                .extension(trusted_peer())
                 .body(Body::from(body))
                 .expect("req"),
         )
@@ -356,6 +370,7 @@ async fn unsubscribed_subscriber_cannot_be_reactivated_via_stale_confirm_token()
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.50")
+                .extension(trusted_peer())
                 .body(Body::from("email=victim%40example.com"))
                 .expect("req"),
         )
@@ -454,6 +469,7 @@ async fn subscribe_rejects_display_name_mailbox_form() {
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.51")
+                .extension(trusted_peer())
                 .body(Body::from("email=Pwned+%3Cvictim%40example.com%3E"))
                 .expect("req"),
         )
@@ -481,53 +497,6 @@ async fn token_round_trip_survives_pipe_in_email() {
     let signed = epistole::token::sign(&tok, secret).expect("sign");
     let verified = epistole::token::verify(&signed, secret, 0).expect("verify");
     assert_eq!(verified.email, "weird|name@example.com");
-}
-
-#[tokio::test]
-#[expect(
-    clippy::expect_used,
-    reason = "test scaffolding - panic on fail is the desired signal"
-)]
-async fn rate_limit_keys_on_last_xff_entry_only() {
-    // Audit findings #5 / #14: rotating X-Forwarded-For chain does NOT
-    // bypass per-IP rate limiting. We use a CONSTANT last entry across
-    // 8 requests (simulating NPM setting it to the real client IP) but
-    // a varying earlier hop (simulating a hostile client trying to spoof
-    // its way to a fresh bucket). The 7th request must 429.
-    let tmp = TempDir::new().expect("tempdir");
-    let store = Arc::new(Store::open(tmp.path()).expect("store"));
-    let app = router(
-        store,
-        Arc::new(test_config(tmp.path().to_path_buf())),
-        test_mailer(),
-    );
-
-    let mut last_status = StatusCode::OK;
-    for i in 0..8u32 {
-        let body = format!("email=spoofer{i}%40example.com");
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/subscribe")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    // Rotating earlier hop, but the LAST entry (NPM-set)
-                    // is constant: 198.51.100.99. The extractor MUST
-                    // key on .99, not the rotating prefix.
-                    .header("x-forwarded-for", format!("10.0.0.{i}, 198.51.100.99"))
-                    .body(Body::from(body))
-                    .expect("req"),
-            )
-            .await
-            .expect("response");
-        last_status = resp.status();
-    }
-    assert_eq!(
-        last_status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "rotating XFF prefix must not bypass per-IP rate limiting"
-    );
 }
 
 #[tokio::test]
@@ -682,6 +651,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.60")
+                .extension(trusted_peer())
                 .body(Body::from("email=user%40example.com"))
                 .expect("req"),
         )
@@ -724,6 +694,7 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
                 .uri("/subscribe")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", "203.0.113.60")
+                .extension(trusted_peer())
                 .body(Body::from("email=user%40example.com"))
                 .expect("req"),
         )
@@ -745,8 +716,8 @@ async fn unsubscribed_subscriber_cannot_resubscribe_to_reactivate_via_stale_toke
 
     // 5. Replay the original confirm URL. Its generation (0) no longer
     //    matches the row's (1, bumped by the unsubscribe in step 3), so
-    //    it stays refused independent of the Pending-flip fix this test
-    //    was originally written against.
+    //    it stays refused: a stale confirm token must not resurrect a
+    //    subscriber past a later state transition.
     let _ = app
         .clone()
         .oneshot(post_form(

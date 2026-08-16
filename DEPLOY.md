@@ -77,7 +77,17 @@ Fill in:
 - `base_url = "https://letters.<your-domain>"`
 - `send_cap_per_hour` / `send_cap_per_day` - not secrets, just numbers. Start conservative (the shipped example's 500/2000) and raise once you've confirmed the relay plan and list size support more.
 - `[brand]` block with `name = "<Your Brand Name>"`, `from_address = "letters@<your-domain>"`, optional `reply_to = "contact@<your-domain>"`
-- `[smtp]` block with the relay host and port
+- `[smtp]` block with the relay host, port, and username
+- `trusted_proxies` — the address(es) NPM connects to epistole FROM, not
+  the address it forwards TO. `["127.0.0.1"]` for the same-box topology
+  this runbook uses; NPM's own LAN IP if it runs on a different host.
+  Each entry accepts a CIDR range (`"10.0.0.0/24"`) instead of a single
+  address if that host doesn't present one stable IP (a load-balanced
+  NPM pool, for example) — this runbook's single-box topology doesn't
+  need it, but the field isn't limited to single literals. Leaving this
+  empty is safe but means `X-Forwarded-For` is never honored, so every
+  visitor behind NPM collapses onto one rate-limit bucket — see
+  `TrustedProxyExtractor` in `src/lib.rs`
 
 Leave the four secrets — including both SMTP credentials — as environment
 references — do not paste the values from step 4 into the toml:
@@ -99,9 +109,10 @@ startup, then rejects placeholder or short values. Pasting a literal such as
 
 Keep the root keys (`bind`, `data_dir`, `base_url`, `token_secret`,
 `send_auth_token`, `webhook_auth_token`, `send_cap_per_hour`,
-`send_cap_per_day`) **above** the `[brand]` and `[smtp]` headers. TOML
-assigns every key after a table header to that table, so a root key placed
-below `[smtp]` loads as `smtp.<key>` and fails with `unknown field`.
+`send_cap_per_day`, `trusted_proxies`) **above** the `[brand]` and `[smtp]`
+headers. TOML assigns every key after a table header to that table, so a
+root key placed below `[smtp]` loads as `smtp.<key>` and fails with `unknown
+field`.
 
 Now write the env file the unit reads, using the values from step 4:
 
@@ -243,9 +254,17 @@ client_max_body_size 256k;
 
 # X-Forwarded-For trust: REPLACE the incoming chain rather than APPEND.
 # Without this, a hostile client sets X-Forwarded-For: 1.2.3.4 in their
-# request and tower_governor's TrustedProxyExtractor would use 1.2.3.4
-# as the rate-limit key - bypassing per-IP enforcement. proxy_set_header
-# overrides any client-supplied value.
+# request and NPM would forward it unchanged. proxy_set_header overrides
+# any client-supplied value so the header NPM sends is always the real
+# visitor IP.
+#
+# This is one half of the trust boundary, not the whole of it: epistole
+# itself independently verifies that the peer connecting to it is listed
+# in trusted_proxies (epistole.toml) before it honors this header at
+# all - forkwright/epistole#67. A client that reaches epistole directly,
+# bypassing NPM entirely, gets keyed on its own real socket peer no
+# matter what X-Forwarded-For it sends; this NPM-side replace only
+# matters for requests that DO come through NPM.
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-Proto $scheme;
