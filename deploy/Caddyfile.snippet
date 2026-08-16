@@ -54,7 +54,7 @@ letters.<consumer-domain> {
         # every other field (status, IP, method, latency) is untouched,
         # so abuse-detection tooling reading this file loses nothing.
         format filter {
-            wrapper json
+            wrap json
             fields {
                 request>uri query {
                     delete token
