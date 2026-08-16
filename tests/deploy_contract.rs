@@ -44,7 +44,7 @@ fn documented_port() -> String {
         .unwrap_or_default()
 }
 
-/// The single fenced ```nginx code block in `DEPLOY.md` — the literal
+/// The single `nginx`-fenced code block in `DEPLOY.md` — the literal
 /// text an operator pastes into NPM's per-host Advanced tab. Scoping to
 /// just this block (rather than the whole runbook) matters for
 /// `npm_advanced_tab_config_never_declares_log_format`: prose elsewhere
