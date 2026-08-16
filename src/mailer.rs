@@ -5,7 +5,9 @@
 //! behind an `Arc` — [`SmtpMailer`]'s pooled connection is only reused
 //! when the same transport instance sends every message.
 
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::stub::AsyncStubTransport;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -18,7 +20,16 @@ use crate::error::{Error, Result};
 /// failure. A handler depends on this trait, never on `lettre`'s
 /// transport types directly, so a test can substitute [`StubMailer`]
 /// without a live network.
-#[async_trait]
+///
+/// WHY not a native `async fn` in the trait: `AppState`/[`router`] pass
+/// this behind `Arc<dyn Mailer>` so a test can substitute [`StubMailer`]
+/// without a live relay — a native `async fn` in a trait is not
+/// dyn-compatible (E0038). `send` is desugared by hand to the boxed
+/// future a native `async fn` would otherwise expand to; the fleet bans
+/// the `async-trait` crate (`RUST.md` "Dependencies") because stable
+/// native async-fn-in-trait covers the non-dyn case, but that coverage
+/// doesn't reach the dyn-compatible one, so the manual desugar is the
+/// standards-compliant way to keep this seam object-safe.
 pub trait Mailer: Send + Sync {
     /// Hand `message` to the transport.
     ///
@@ -26,7 +37,7 @@ pub trait Mailer: Send + Sync {
     ///
     /// Returns [`Error::Smtp`] when the relay rejects the message or the
     /// connection fails.
-    async fn send(&self, message: Message) -> Result<()>;
+    fn send(&self, message: Message) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
 /// Production mailer: a pooled [`AsyncSmtpTransport`] connected to the
@@ -78,16 +89,17 @@ impl SmtpMailer {
     }
 }
 
-#[async_trait]
 impl Mailer for SmtpMailer {
-    async fn send(&self, message: Message) -> Result<()> {
-        self.transport
-            .send(message)
-            .await
-            .map(|_response| ())
-            .map_err(|e| Error::Smtp {
-                reason: format!("relay send: {e}"),
-            })
+    fn send(&self, message: Message) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            self.transport
+                .send(message)
+                .await
+                .map(|_response| ())
+                .map_err(|e| Error::Smtp {
+                    reason: format!("relay send: {e}"),
+                })
+        })
     }
 }
 
@@ -128,15 +140,16 @@ impl StubMailer {
     }
 }
 
-#[async_trait]
 impl Mailer for StubMailer {
-    async fn send(&self, message: Message) -> Result<()> {
-        self.transport
-            .send(message)
-            .await
-            .map(|_ok| ())
-            .map_err(|_e| Error::Smtp {
-                reason: "stub mailer configured to reject".to_owned(),
-            })
+    fn send(&self, message: Message) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            self.transport
+                .send(message)
+                .await
+                .map(|_ok| ())
+                .map_err(|_e| Error::Smtp {
+                    reason: "stub mailer configured to reject".to_owned(),
+                })
+        })
     }
 }

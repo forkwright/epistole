@@ -77,11 +77,6 @@ version = "0.11"
 default-features = false
 features = ["smtp-transport", "tokio1-rustls", "ring", "webpki-roots", "builder", "tracing"]
 
-# lettre's own AsyncTransport trait is `#[async_trait]` (dep already in the
-# tree via lettre's "tokio1" feature) - the crate's Mailer trait needs the
-# same treatment to stay object-safe (`Arc<dyn Mailer>` in AppState).
-async-trait = "0.1"
-
 [dependencies.pulldown-cmark]
 version = "0.13"
 default-features = false
