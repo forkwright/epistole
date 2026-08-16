@@ -32,6 +32,16 @@ definition = "Signed link token that flips an Active subscriber to Unsubscribed.
 canonical = true
 
 [[terms]]
+term = "consent generation"
+definition = "Monotonic counter on a subscriber row, bumped on a successful unsubscribe. A confirm or unsubscribe token carries the generation read at mint time; a handler honors the token only while it still matches, which distinguishes a token minted before a later consent event from one minted after it."
+canonical = true
+
+[[terms]]
+term = "one-click unsubscribe"
+definition = "The RFC 8058 List-Unsubscribe-Post contract: a mail client POSTs directly to a dedicated endpoint with a fixed body, no interstitial, distinct from the manual browser-driven unsubscribe flow."
+canonical = true
+
+[[terms]]
 term = "send"
 definition = "Operator-authored newsletter issue persisted before delivery."
 canonical = true

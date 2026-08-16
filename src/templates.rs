@@ -48,7 +48,26 @@ pub(crate) fn pending(brand: &str, email: &str) -> Markup {
     shell(brand, "Confirm your subscription", &body)
 }
 
-/// Page shown after `GET /confirm?token=...` succeeds.
+/// Page shown by `GET /confirm?token=...` when the token verifies and a
+/// confirmation is still pending (forkwright/epistole#68). This page
+/// alone does nothing: the visitor's own click submits the form below,
+/// which is the `POST /confirm` that actually activates the subscriber.
+/// The form's `action` is a bare same-origin path — never a full URL
+/// carrying the token — so nothing on this page can leak the token into
+/// a Referer header on any subsequent navigation.
+pub(crate) fn confirm_interstitial(brand: &str, token: &str) -> Markup {
+    let body = html! {
+        h1 { "Confirm your subscription?" }
+        p { "Click below to finish subscribing to " (brand) "." }
+        form method="post" action="/confirm" {
+            input type="hidden" name="token" value=(token);
+            button type="submit" { "Confirm subscription" }
+        }
+    };
+    shell(brand, "Confirm your subscription", &body)
+}
+
+/// Page shown after `POST /confirm` succeeds.
 pub(crate) fn confirmed(brand: &str) -> Markup {
     let body = html! {
         h1 { "Subscribed." }
@@ -58,7 +77,24 @@ pub(crate) fn confirmed(brand: &str) -> Markup {
     shell(brand, "Subscription confirmed", &body)
 }
 
-/// Page shown after `GET /unsubscribe?token=...` succeeds.
+/// Page shown by `GET /unsubscribe?token=...` when the token verifies
+/// and the address is still Active (forkwright/epistole#68). Mirrors
+/// [`confirm_interstitial`]: the click that matters is the form's own
+/// same-origin `POST /unsubscribe` submit, not the GET that rendered it.
+pub(crate) fn unsubscribe_interstitial(brand: &str, token: &str) -> Markup {
+    let body = html! {
+        h1 { "Unsubscribe?" }
+        p { "Click below to stop receiving newsletters from " (brand) "." }
+        form method="post" action="/unsubscribe" {
+            input type="hidden" name="token" value=(token);
+            button type="submit" { "Unsubscribe" }
+        }
+    };
+    shell(brand, "Unsubscribe", &body)
+}
+
+/// Page shown after `POST /unsubscribe` (or the RFC 8058 one-click
+/// endpoint) succeeds.
 pub(crate) fn unsubscribed(brand: &str) -> Markup {
     let body = html! {
         h1 { "Unsubscribed." }

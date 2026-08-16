@@ -472,9 +472,22 @@ Operational notes:
 
 The rotate-and-restart approach assumes outstanding unclicked confirm links are acceptable to invalidate. If that becomes operationally painful, a future change can add a `token_secret_previous` config field that `verify()` falls back to during a rotation window. The original analysis in forkwright/epistole#3 concluded the maintenance cost of a two-secret window outweighed its benefit at Phase 0 scale; revisit that conclusion when confirm-link loss surfaces as real friction.
 
+### Upgrading past the consent-generation token change (#65/#68)
+
+The confirm/unsubscribe token wire format gained a fourth field (consent
+generation) and the mutation moved from `GET` to `POST` behind a
+same-origin interstitial. Any token signed under the old three-field
+format fails to parse under the new verifier and lands on the
+invalid-link page — the same visible effect as a `token_secret` rotation
+above, but it happens once, on the deploy that carries this change, not
+on an operator-triggered schedule. No `data_dir` migration is needed:
+existing `Subscriber` rows deserialize with `generation = 0`, which is
+the same baseline a brand-new address starts at, so restarting onto the
+new binary is the entire upgrade step.
+
 ## What's NOT in this runbook
 
-- **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#3. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days.
+- **Phase 2 wiring** (lettre SMTP relay) - tracked at forkwright/epistole#3. The Phase 0 build logs the confirm URL instead of mailing. Subscribe + confirm flows work; the operator just has to copy-paste the link in early days. When Phase 2 mints per-recipient unsubscribe tokens for a send, it should set `List-Unsubscribe: <base_url>/unsubscribe/one-click?token=...>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` on the outbound message — the endpoint those headers need already exists (`POST /unsubscribe/one-click`, forkwright/epistole#68) and only wants headers pointed at it.
 - **Archive feed/import polish** - the `/archive` index/detail pages walk the sends ledger; `/archive.xml` and import tooling remain follow-up work.
 - **bin/epistole-import** - tracked separately; Phase 3.
 

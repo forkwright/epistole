@@ -31,12 +31,27 @@ purpose = "Validate a subscription request and send a stateless confirmation."
 [[http_routes]]
 method = "GET"
 path = "/confirm"
-purpose = "Verify a confirm token and activate a subscriber."
+purpose = "Preview a confirm token's outcome without mutating (RFC 9110 safe-method)."
+
+[[http_routes]]
+method = "POST"
+path = "/confirm"
+purpose = "Commit a confirm token and activate a subscriber."
 
 [[http_routes]]
 method = "GET"
 path = "/unsubscribe"
-purpose = "Verify an unsubscribe token and mark a subscriber unsubscribed."
+purpose = "Preview an unsubscribe token's outcome without mutating (RFC 9110 safe-method)."
+
+[[http_routes]]
+method = "POST"
+path = "/unsubscribe"
+purpose = "Commit an unsubscribe token and mark a subscriber unsubscribed."
+
+[[http_routes]]
+method = "POST"
+path = "/unsubscribe/one-click"
+purpose = "RFC 8058 List-Unsubscribe-Post: one-click unsubscribe for mail clients, no interstitial."
 
 [[http_routes]]
 method = "GET"

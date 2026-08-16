@@ -1,10 +1,10 @@
 //! HMAC-signed time-limited tokens for confirm + unsubscribe links.
 //!
 //! Wire format: `base64url(payload).base64url(signature)`
-//! where the payload contains `{kind}|{email_b64}|{exp_unix}`. The
-//! email is itself base64url-encoded inside the payload so a `|`
+//! where the payload contains `{kind}|{email_b64}|{exp_unix}|{generation}`.
+//! The email is itself base64url-encoded inside the payload so a `|`
 //! character in a (RFC-legal) email local-part can't shift field
-//! boundaries — `splitn(3, '|')` is safe because every field's bytes
+//! boundaries — `splitn(4, '|')` is safe because every field's bytes
 //! are a closed alphabet.
 //!
 //! Signature is HMAC-SHA256 over the payload with the configured secret.
@@ -16,8 +16,16 @@
 //! 4. parse fields; base64-decode email; reject if `kind` mismatches
 //!    or `exp_unix < now()`
 //!
-//! No replay-protection by design - confirm/unsubscribe operations are
-//! idempotent at the data level.
+//! No single-use replay-protection by design — confirm/unsubscribe
+//! operations are idempotent at the data level once a token has been
+//! applied. `generation` (forkwright/epistole#65) is a different
+//! property: it does not make a token single-use, it makes a token
+//! *superseded* the moment a later consent transition happens for that
+//! subscriber, regardless of the token's own expiry. A handler applying
+//! a token compares `Token::generation` against the subscriber row's
+//! current generation; see `handlers/confirm.rs` and
+//! `handlers/unsubscribe.rs` for the comparison rules, which are
+//! deliberately asymmetric between the two handlers.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -67,17 +75,23 @@ pub struct Token {
     pub email: String,
     /// Expiration time as a Unix timestamp.
     pub exp_unix: i64,
+    /// The subscriber's consent generation at the moment this token was
+    /// minted (0 for an address with no row yet). A handler accepts the
+    /// token's authority to transition state only while this still
+    /// matches the row's current generation — see [`crate::store::Subscriber::generation`].
+    pub generation: u64,
 }
 
 impl Token {
     /// Construct a new token. Useful for tests and integration callers
     /// that mint tokens outside the handler path.
     #[must_use]
-    pub fn new(kind: TokenKind, email: String, exp_unix: i64) -> Self {
+    pub fn new(kind: TokenKind, email: String, exp_unix: i64, generation: u64) -> Self {
         Self {
             kind,
             email,
             exp_unix,
+            generation,
         }
     }
 }
@@ -96,12 +110,18 @@ pub fn sign(token: &Token, secret: &[u8]) -> Result<String> {
         });
     }
     // Email is base64url-encoded inside the payload so any byte (including
-    // `|`, `\n`, `\0`, etc.) survives the `splitn(3, '|')` round-trip.
+    // `|`, `\n`, `\0`, etc.) survives the `splitn(4, '|')` round-trip.
     // Without this, an RFC-legal email with `|` in the local part would
     // mint a token that the verifier mis-parses, locking that subscriber
     // out forever.
     let email_b64 = URL_SAFE_NO_PAD.encode(token.email.as_bytes());
-    let payload = format!("{}|{}|{}", token.kind.as_str(), email_b64, token.exp_unix);
+    let payload = format!(
+        "{}|{}|{}|{}",
+        token.kind.as_str(),
+        email_b64,
+        token.exp_unix,
+        token.generation
+    );
     let mut mac = HmacSha256::new_from_slice(secret).map_err(|e| Error::Config {
         reason: format!("HMAC key: {e}"),
     })?;
@@ -136,7 +156,7 @@ pub fn verify(raw: &str, secret: &[u8], now_unix: i64) -> Result<Token> {
         .map_err(|_| Error::InvalidToken)?;
 
     let payload = std::str::from_utf8(&payload_bytes).map_err(|_| Error::InvalidToken)?;
-    let mut parts = payload.splitn(3, '|');
+    let mut parts = payload.splitn(4, '|');
     let kind = parts
         .next()
         .and_then(TokenKind::from_str)
@@ -151,11 +171,16 @@ pub fn verify(raw: &str, secret: &[u8], now_unix: i64) -> Result<Token> {
         .ok_or(Error::InvalidToken)?
         .parse()
         .map_err(|_| Error::InvalidToken)?;
+    let generation: u64 = parts
+        .next()
+        .ok_or(Error::InvalidToken)?
+        .parse()
+        .map_err(|_| Error::InvalidToken)?;
 
     if exp_unix < now_unix {
         return Err(Error::InvalidToken);
     }
-    Ok(Token::new(kind, email, exp_unix))
+    Ok(Token::new(kind, email, exp_unix, generation))
 }
 
 #[cfg(test)]
@@ -173,11 +198,33 @@ mod tests {
             TokenKind::Confirm,
             "alice@example.com".into(),
             9_999_999_999,
+            0,
         );
         let signed = sign(&tok, secret).expect("sign");
         assert!(!signed.is_empty(), "sign produced a non-empty token");
         let verified = verify(&signed, secret, 0).expect("verify");
         assert_eq!(verified, tok);
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn round_trip_preserves_generation() {
+        // forkwright/epistole#65: the generation is the fact a handler
+        // compares against the subscriber row, so it must survive the
+        // sign/verify round trip exactly, not just decode to *some* u64.
+        let secret = b"this-is-only-for-tests-32-bytes!";
+        let tok = Token::new(
+            TokenKind::Unsubscribe,
+            "dora@example.com".into(),
+            9_999_999_999,
+            7,
+        );
+        let signed = sign(&tok, secret).expect("sign");
+        let verified = verify(&signed, secret, 0).expect("verify");
+        assert_eq!(verified.generation, 7);
     }
 
     #[test]
@@ -194,6 +241,7 @@ mod tests {
             TokenKind::Confirm,
             "weird|name@example.com".into(),
             9_999_999_999,
+            0,
         );
         let signed = sign(&tok, secret).expect("sign");
         let verified = verify(&signed, secret, 0).expect("verify");
@@ -207,7 +255,7 @@ mod tests {
     )]
     fn rejects_expired() {
         let secret = b"this-is-only-for-tests-32-bytes!";
-        let tok = Token::new(TokenKind::Unsubscribe, "bob@example.com".into(), 100);
+        let tok = Token::new(TokenKind::Unsubscribe, "bob@example.com".into(), 100, 0);
         let signed = sign(&tok, secret).expect("sign");
         assert!(verify(&signed, secret, 200).is_err());
     }
@@ -223,6 +271,7 @@ mod tests {
             TokenKind::Confirm,
             "carol@example.com".into(),
             9_999_999_999,
+            0,
         );
         let signed = sign(&tok, secret).expect("sign");
         // Mutate the last char of the payload - signature now invalid.
@@ -234,5 +283,28 @@ mod tests {
         }
         let tampered: String = tampered.into_iter().collect();
         assert!(verify(&tampered, secret, 0).is_err());
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn rejects_a_pre_generation_three_field_payload() {
+        // Any token signed under the pre-#65 three-field wire format
+        // fails closed under the four-field parser rather than silently
+        // defaulting the missing generation to something guessable.
+        let secret = b"this-is-only-for-tests-32-bytes!";
+        let email_b64 = URL_SAFE_NO_PAD.encode(b"legacy@example.com");
+        let payload = format!("c|{email_b64}|9999999999");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key");
+        mac.update(payload.as_bytes());
+        let sig = mac.finalize().into_bytes();
+        let legacy_token = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(payload.as_bytes()),
+            URL_SAFE_NO_PAD.encode(sig)
+        );
+        assert!(verify(&legacy_token, secret, 0).is_err());
     }
 }
