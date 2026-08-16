@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/forkwright/epistole/compare/v0.1.3...v0.1.4) (2026-08-16)
+
+
+### Bug Fixes
+
+* **ci:** make the dependabot auto-merge guard refuse instead of merging ([#95](https://github.com/forkwright/epistole/issues/95)) ([fbb7b6e](https://github.com/forkwright/epistole/commit/fbb7b6e794af3ff7ff42399cdfd07f6513030636)), closes [#94](https://github.com/forkwright/epistole/issues/94)
+* **consent-tokens:** make GET side-effect-free and bind tokens to a consent generation ([#97](https://github.com/forkwright/epistole/issues/97)) ([eb5d296](https://github.com/forkwright/epistole/commit/eb5d296f785d2a7050fdd716d38250aec2bd1be3))
+
 ## [0.1.3](https://github.com/forkwright/epistole/compare/v0.1.2...v0.1.3) (2026-08-04)
 
 
