@@ -398,6 +398,14 @@ fn config_load_refuses_to_boot_with_non_loopback_bind_and_no_trusted_proxies() {
     // a second `Config`-construction path, would silently drop the
     // check while every prior test kept passing. This fixture parses a
     // full epistole.toml-shaped file through the real entrypoint.
+    //
+    // WHY: every secret here, including smtp.username, must independently
+    // clear Config::load's strength floors (forkwright/epistole#42 folded
+    // smtp.username into that check with an 8-byte minimum) so the ONLY
+    // thing this fixture is wrong about is bind/trusted_proxies - a fixture
+    // that fails an earlier, unrelated check would still make Config::load
+    // return Err(), but for the wrong reason, and the assertion below on
+    // "trusted_proxies"/"loopback" in the message is what catches that.
     let dir = tempfile::TempDir::new().expect("tempdir");
     let toml_path = dir.path().join("epistole.toml");
     let toml = format!(
@@ -418,7 +426,7 @@ from_address = "letters@example.com"
 [smtp]
 host = "smtp.example.com"
 port = 587
-username = "user"
+username = "Qw3Er5Ty7Ui9"
 password = "9f8e7d6c5b4a3f2e1d0c"
 "#,
         data_dir = dir.path().join("data").display(),
