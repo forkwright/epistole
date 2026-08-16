@@ -18,8 +18,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::DefaultBodyLimit;
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, MatchedPath};
+use axum::http::{Request, StatusCode};
 use axum::{
     Router,
     routing::{get, post},
@@ -145,11 +146,35 @@ impl KeyExtractor for TrustedProxyExtractor {
     }
 }
 
+/// Builds the per-request tracing span. Replaces `TraceLayer`'s
+/// `DefaultMakeSpan`, which records the complete `uri` — path AND query
+/// string — as a span field: `tracing-subscriber`'s JSON formatter
+/// attaches every currently-open span's fields to each event logged
+/// inside it by default, so that one field alone put the raw uri on
+/// every log line for the lifetime of the request. `GET /confirm`,
+/// `GET /unsubscribe`, and `POST /unsubscribe/one-click` all carry a
+/// signed capability token — and, nested inside it, the subscriber's
+/// email — in that query string (forkwright/epistole#66).
+///
+/// Records only the method and the matched ROUTE TEMPLATE (e.g.
+/// `/confirm`, never the literal request path or query). Falls back to
+/// the bare request path when no route matched (a 404, where axum never
+/// inserts `MatchedPath`) — `Uri::path()` never includes a query string
+/// either, so the fallback carries the same guarantee.
+fn make_span(request: &Request<Body>) -> tracing::Span {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| request.uri().path(), MatchedPath::as_str);
+    tracing::debug_span!("request", method = %request.method(), route = %route)
+}
+
 /// Build the axum router. Exposed so integration tests can assert
 /// against the same routing the production binary uses.
 ///
 /// Wiring order — outer to inner:
-/// 1. tracing (every request logged)
+/// 1. tracing (every request logged; span carries method + matched route
+///    only — see [`make_span`], forkwright/epistole#66)
 /// 2. timeout (10s per request)
 /// 3. per-route body limit (cheap rejection for oversized POSTs)
 /// 4. per-IP rate limiter (defense against subscribe-flood / brute-force)
@@ -239,10 +264,131 @@ pub fn router(store: Arc<Store>, config: Arc<Config>) -> Router {
         .route("/healthz", get(handlers::healthz))
         .merge(public_routes)
         .merge(operator_routes)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(make_span))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    use tower_http::trace::{DefaultMakeSpan, MakeSpan};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::*;
+
+    /// In-memory sink for a `tracing_subscriber::fmt` writer, so a test
+    /// can inspect the exact bytes a real JSON subscriber would have
+    /// shipped to the journal — rather than trusting that a span-maker
+    /// "looks right".
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLog {
+        #[expect(
+            clippy::expect_used,
+            reason = "test scaffolding - panic on fail is the desired signal"
+        )]
+        fn as_string(&self) -> String {
+            String::from_utf8(self.0.lock().expect("lock").clone()).expect("utf8 log output")
+        }
+    }
+
+    impl io::Write for CapturedLog {
+        #[expect(
+            clippy::expect_used,
+            reason = "test scaffolding - panic on fail is the desired signal"
+        )]
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for CapturedLog {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Sets a real JSON `tracing_subscriber` as the thread-local default
+    /// (wired the same way `main.rs` wires it — including
+    /// `RUST_LOG=debug`, per forkwright/epistole#66's own reproduction
+    /// steps, since `TraceLayer`'s span is created at `Level::DEBUG` and
+    /// production's default filter is `info`), builds `span` UNDER that
+    /// subscriber (a span built before its subscriber is active is
+    /// permanently disabled — building it inside this closure, not
+    /// passing an already-built `Span` in, is load-bearing), enters it,
+    /// emits one probe event, and returns everything that subscriber
+    /// wrote.
+    fn captured_output(build_span: impl FnOnce() -> tracing::Span) -> String {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(log.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let span = build_span();
+        let _entered = span.enter();
+        tracing::debug!("probe");
+        log.as_string()
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn default_make_span_would_have_leaked_the_token_query_string() {
+        // Negative-case fixture: proves `captured_output` actually
+        // detects a leak, by reproducing one with the upstream default
+        // `make_span` (above) replaces. If this assertion ever stops
+        // holding, the positive test below is no longer trustworthy
+        // either — the technique, not just the fix, is under test.
+        let request = Request::builder()
+            .uri("/confirm?token=PII_CAPABILITY_SENTINEL")
+            .body(Body::empty())
+            .expect("request");
+        let out = captured_output(|| DefaultMakeSpan::new().make_span(&request));
+        assert!(
+            out.contains("PII_CAPABILITY_SENTINEL"),
+            "expected DefaultMakeSpan to leak the token query string \
+             (confidence check on the capture technique itself): {out}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test scaffolding - panic on fail is the desired signal"
+    )]
+    fn make_span_never_records_the_query_string() {
+        let request = Request::builder()
+            .uri("/confirm?token=PII_CAPABILITY_SENTINEL")
+            .body(Body::empty())
+            .expect("request");
+        let out = captured_output(|| make_span(&request));
+        assert!(
+            !out.contains("PII_CAPABILITY_SENTINEL"),
+            "make_span must never record the query string: {out}"
+        );
+        assert!(
+            out.contains("/confirm"),
+            "make_span must still record the request path when no route \
+             matched (the fallback branch, exercised here since a bare \
+             Request::builder() carries no MatchedPath extension): {out}"
+        );
+    }
 }
