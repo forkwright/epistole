@@ -38,6 +38,21 @@ letters.<consumer-domain> {
             roll_size 50mb
             roll_keep 7
         }
-        format json
+        # /confirm, /unsubscribe, and /unsubscribe/one-click carry a
+        # signed capability token (and, nested inside it, the
+        # subscriber's email) as a `token` query parameter. Plain `json`
+        # logs the complete request URI verbatim, including that query
+        # string, into a persisted file (forkwright/epistole#66). The
+        # filter encoder deletes just that one key from the logged URI —
+        # every other field (status, IP, method, latency) is untouched,
+        # so abuse-detection tooling reading this file loses nothing.
+        format filter {
+            wrapper json
+            fields {
+                request>uri query {
+                    delete token
+                }
+            }
+        }
     }
 }
