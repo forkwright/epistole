@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/forkwright/epistole/compare/v0.1.4...v0.2.0) (2026-08-16)
+
+
+### Features
+
+* **send:** SMTP relay send path — idempotent send_id, per-recipient ledger, send caps, webhooks ([#3](https://github.com/forkwright/epistole/issues/3)) ([#99](https://github.com/forkwright/epistole/issues/99)) ([f3df2d7](https://github.com/forkwright/epistole/commit/f3df2d7ed26051f337592ecdbfaa3c0ee722696c))
+
+
+### Bug Fixes
+
+* **ci:** run CI on a pull request whose base is not main ([#100](https://github.com/forkwright/epistole/issues/100)) ([3e7154d](https://github.com/forkwright/epistole/commit/3e7154d5fdc42eee17cabcac9446ad12f621ab47))
+* **rate-limit:** verify peer before honoring X-Forwarded-For ([#103](https://github.com/forkwright/epistole/issues/103)) ([50fb0e4](https://github.com/forkwright/epistole/commit/50fb0e477c1dbbdc2e4b8f6f40ac8d4f707eff51))
+* **tracing:** stop recording capability tokens and PII in request traces ([#105](https://github.com/forkwright/epistole/issues/105)) ([9c56500](https://github.com/forkwright/epistole/commit/9c565002905ba11b02c8d9d8e58752c0baab961f))
+
 ## [0.1.4](https://github.com/forkwright/epistole/compare/v0.1.3...v0.1.4) (2026-08-16)
 
 
