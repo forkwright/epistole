@@ -44,6 +44,53 @@ fn documented_port() -> String {
         .unwrap_or_default()
 }
 
+/// The single `nginx`-fenced code block in `DEPLOY.md` — the literal
+/// text an operator pastes into NPM's per-host Advanced tab. Scoping to
+/// just this block (rather than the whole runbook) matters for
+/// `npm_advanced_tab_config_never_declares_log_format`: prose elsewhere
+/// in the doc is free to describe the http-scope alternative without
+/// tripping a check that exists to catch that directive landing where
+/// NPM would reject it.
+#[expect(
+    clippy::expect_used,
+    reason = "a malformed fixture is a test bug, not a runtime path"
+)]
+fn npm_advanced_tab_config() -> &'static str {
+    let start = RUNBOOK
+        .find("```nginx")
+        .expect("DEPLOY.md must have an nginx code fence")
+        + "```nginx".len();
+    let rest = &RUNBOOK[start..];
+    let end = rest.find("\n```").expect("the nginx code fence must close");
+    &rest[..end]
+}
+
+/// The body of an exact-match `location = <path> { ... }` block inside
+/// `text`, brace-balanced so a nested `{`/`}` pair can't truncate it
+/// early. `None` if the block is absent or its closing brace is
+/// missing — both are structural failures the caller should fail on,
+/// not a `contains()` that would pass on the path string appearing
+/// anywhere at all (a comment mentioning it, or a DIFFERENT location's
+/// body) rather than inside that route's own block.
+fn location_block<'a>(text: &'a str, path: &str) -> Option<&'a str> {
+    let needle = format!("location = {path} {{");
+    let start = text.find(&needle)? + needle.len();
+    let mut depth = 1i32;
+    for (offset, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..start + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[test]
 #[expect(clippy::expect_used, reason = "a failed setup step is a test failure")]
 fn example_config_loads_once_its_placeholders_are_filled_in() {
@@ -129,6 +176,70 @@ fn caddy_access_log_redacts_the_token_query_parameter() {
         CADDY_SNIPPET.contains("request>uri query") && CADDY_SNIPPET.contains("delete token"),
         "the uri's `token` query parameter must be deleted before the request \
          reaches the access log"
+    );
+}
+
+#[test]
+fn npm_token_routes_redact_access_log_and_agree_on_the_forward_port() {
+    // forkwright/epistole#104: unlike Caddy's per-site config (#66,
+    // tested above), NPM's per-host Advanced tab cannot declare a
+    // redacting log format — that's an http-context directive, one
+    // level above what this tab reaches. The reachable mitigation is
+    // `access_log off` on the three routes that carry the token query
+    // parameter (GET /confirm, GET /unsubscribe, POST
+    // /unsubscribe/one-click), each with its OWN proxy_pass since an
+    // exact-match `location =` does not fall back to NPM's
+    // auto-generated `location /`.
+    //
+    // This inspects the RENDERED config, not a flat substring search:
+    // `location_block` isolates each route's own brace-balanced body
+    // before either assertion runs, so a location that never redacts
+    // (or a different route's body happening to contain the words
+    // elsewhere) cannot pass by coincidence the way a whole-file
+    // `.contains()` could.
+    let port = documented_port();
+    assert!(!port.is_empty(), "example config must declare a bind port");
+    let expected_proxy_pass = format!("proxy_pass http://127.0.0.1:{port};");
+
+    for path in ["/confirm", "/unsubscribe", "/unsubscribe/one-click"] {
+        let block = location_block(npm_advanced_tab_config(), path).unwrap_or_else(|| {
+            panic!(
+                "DEPLOY.md's Advanced-tab Nginx config must define an exact-match \
+                 `location = {path} {{ ... }}` block so this route's token query \
+                 parameter is excluded from the NPM access log"
+            )
+        });
+        assert!(
+            block.contains("access_log off;"),
+            "location = {path} block must turn off access logging — its query \
+             string (the token) is otherwise recorded verbatim to the NPM \
+             access log: {block:?}"
+        );
+        assert!(
+            block.contains(&expected_proxy_pass),
+            "location = {path} block's own proxy_pass must match the documented \
+             Forward Port ({port}); an exact-match location does not inherit \
+             NPM's auto-generated proxy, so a stale port here silently breaks \
+             the route: {block:?}"
+        );
+    }
+}
+
+#[test]
+fn npm_advanced_tab_config_never_declares_log_format() {
+    // A `log_format` directive is only legal at nginx's http context —
+    // one level above what NPM's per-host Advanced tab can reach
+    // (forkwright/epistole#104's structural blocker, see the comment
+    // this test is paired with in DEPLOY.md). NPM rejects the whole
+    // Advanced-tab config at save time if it's present, so catch a
+    // future edit that pastes the Caddy-style redaction technique in
+    // here instead of the access_log-off mitigation at build time
+    // rather than at a live host's save click.
+    assert!(
+        !npm_advanced_tab_config().contains("log_format"),
+        "log_format cannot be declared in NPM's per-host Advanced tab \
+         (server-block scope); it belongs at http scope, out of this \
+         repo's reach"
     );
 }
 

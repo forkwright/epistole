@@ -295,9 +295,60 @@ add_header X-Content-Type-Options "nosniff" always;
 add_header X-Frame-Options "DENY" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+
+# === Token-query-parameter redaction (forkwright/epistole#104) ===
+#
+# GET /confirm, GET /unsubscribe, and POST /unsubscribe/one-click all
+# carry the signed capability token — and, base64-nested inside it, the
+# subscriber's email — as a `token` query parameter. NPM's default
+# access log format records the complete request line verbatim, so
+# every hit on these three routes would otherwise persist the token to
+# <reverse-proxy-data>/logs/proxy-host-*_access.log, the same file
+# section 8b's CrowdSec scenario reads. deploy/Caddyfile.snippet closes
+# the identical exposure for Caddy (forkwright/epistole#66) with a
+# redacting log format, but that mechanism can only be declared one
+# nginx context above this Advanced tab — it is not reachable from a
+# per-host field. The mitigation reachable from here is turning logging
+# off for just these three exact routes:
+location = /confirm {
+    access_log off;
+    proxy_pass http://127.0.0.1:9090;
+}
+location = /unsubscribe {
+    access_log off;
+    proxy_pass http://127.0.0.1:9090;
+}
+location = /unsubscribe/one-click {
+    access_log off;
+    proxy_pass http://127.0.0.1:9090;
+}
+# Each `location =` above is an EXACT match, so — unlike a `location /`
+# prefix block — it does NOT fall back to NPM's auto-generated proxy
+# and must therefore name its own proxy_pass, duplicating the Forward
+# Port from the Details tab above (currently 9090). That duplication is
+# a drift risk on its own: tests/deploy_contract.rs's
+# `npm_token_routes_redact_access_log_and_agree_on_the_forward_port`
+# fails the moment this stops matching. proxy_set_header directives are
+# deliberately NOT repeated inside these blocks: nginx inherits the
+# full server-level set defined above (Cloudflare real-IP restoration
+# included) into a location UNLESS that location defines its own — so
+# redeclaring even one of them here would silently drop the rest.
 ```
 
 Save → enable → wait for the cert challenge.
+
+**Tradeoff, stated explicitly:** these three routes stop appearing in
+`<reverse-proxy-data>/logs/proxy-host-*_access.log` at all, so section
+8b's `forkwright/epistole-abuse` CrowdSec scenario cannot see abuse
+traffic against them specifically — epistole's own `GovernorLayer`
+(6 req/min per key, `src/lib.rs`) still rate-limits every one of these
+routes regardless of what the proxy log sees. The alternative that
+keeps full visibility is administrator-side and out of this repo's
+reach: adding a redacting format at NPM's global nginx scope (one
+context above what any per-host Advanced tab can declare) and pointing
+this host's access log at it by name. That path is not shipped here
+because it cannot be — there is no per-host field it can be pasted
+into, and no config this repo controls that reaches NPM's global scope.
 
 End-to-end probes:
 
