@@ -5,7 +5,7 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/forkwright/epistole"
 rust-version = "1.94"
-description = "Sovereign newsletter service for fleet web properties - axum + fjall + maud + lettre."
+description = "Self-hosted newsletter service for fleet web properties - axum + fjall + maud + lettre."
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }

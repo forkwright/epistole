@@ -3,3 +3,21 @@
 RUST/pub-visibility:src/error.rs
 RUST/pub-visibility:src/store.rs
 RUST/pub-visibility:src/token.rs
+
+# gate-attestation.yml deliberately carries no top-level concurrency block:
+# the called hybrid-gate.yml already declares one keyed
+# `${{ github.workflow }}-${{ github.ref }}`, and github.workflow resolves
+# to the CALLING workflow's name even inside the callee, so a second block
+# here would collide on the identical key and self-cancel the run (kanon#2522
+# -- see the in-file WHY comment above the `jobs:` block).
+YAML/missing-concurrency:.github/workflows/gate-attestation.yml
+
+# False positive, not a real formatting problem: these two lines are plain
+# TOML strings whose prose happens to contain a literal `{...}` (documenting
+# a JSON webhook body shape), which the TOML/inline-table-too-long checker
+# misreads as inline-table structure because it scans raw text instead of a
+# TOML-aware source view -- tracked as kanon#3111 ("Basanos TOML rules read
+# string content as structure"). Reword the checker, not this prose, once
+# #3111 lands.
+TOML/inline-table-too-long:_llm/current_state.toml
+TOML/inline-table-too-long:_llm/decisions.toml
