@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/forkwright/epistole/compare/v0.2.0...v0.2.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **ci:** kanon-lint must fail closed, not false-green, when FLEET_REPO_TOKEN is absent ([#109](https://github.com/forkwright/epistole/issues/109)) ([0a19302](https://github.com/forkwright/epistole/commit/0a19302a3530932a45d1b8bcc24d33dcc95a2bf5))
+
 ## [0.2.0](https://github.com/forkwright/epistole/compare/v0.1.4...v0.2.0) (2026-08-16)
 
 
