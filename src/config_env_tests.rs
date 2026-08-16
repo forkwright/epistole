@@ -3,7 +3,48 @@
 
 use secrecy::{ExposeSecret, SecretString};
 
-use super::{is_valid_env_ref, resolve_secret_env, validate_secret_strength};
+use super::{Config, is_valid_env_ref, resolve_secret_env, validate_secret_strength};
+
+/// A config TOML that loads cleanly — every secret clears its strength
+/// floor and misses every blocked pattern, every send cap is sane. Tests
+/// below mutate one line at a time to exercise a single failure mode.
+fn valid_config_toml() -> String {
+    r#"
+bind = "127.0.0.1:9090"
+data_dir = "/tmp/epistole-config-test-does-not-need-to-exist"
+base_url = "https://letters.example.com"
+token_secret = "Zx7Qv2Lm9Kd4Rt8Wn1Yb6Hf3Jc5Pg0Su"
+send_auth_token = "Vb3Nm8Qw1Ei6Rt9Yu2Io5Pa7"
+webhook_auth_token = "Ce4Ht9Ok2Sw5Xz8Bd1Fg6Ju3"
+send_cap_per_hour = 500
+send_cap_per_day = 2000
+
+[brand]
+name = "Test Brand"
+from_address = "letters@example.com"
+
+[smtp]
+host = "smtp.postmarkapp.com"
+port = 587
+username = "Rn8Vt3Wc6Ym1Ap4Ez7"
+password = "Kd9Fh2Lq7Zx4Cv1Bn6Mw3Jt8"
+"#
+    .to_owned()
+}
+
+/// Write `toml` to a tempfile and load it, so a test can assert on the
+/// full `Config::load` pipeline (env resolution, strength checks, and
+/// the cap sanity checks) rather than only the free helper functions.
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn load(toml: &str) -> super::Result<Config> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("epistole.toml");
+    std::fs::write(&path, toml).expect("write config");
+    Config::load(&path)
+}
 
 #[test]
 #[expect(
@@ -183,4 +224,108 @@ fn empty_env_var_errors() {
     unsafe {
         std::env::remove_var("EPISTOLE_TEST_EMPTY");
     }
+}
+
+#[test]
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
+fn valid_config_loads() {
+    load(&valid_config_toml()).expect("baseline config must load");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn smtp_username_placeholder_is_refused() {
+    // forkwright/epistole#42: this used to boot cleanly - username was
+    // exempt from every check the sibling secrets go through.
+    let toml = valid_config_toml().replace(
+        r#"username = "Rn8Vt3Wc6Ym1Ap4Ez7""#,
+        r#"username = "REPLACE_WITH_POSTMARK_TOKEN""#,
+    );
+    let err = load(&toml).unwrap_err().to_string();
+    assert!(
+        err.contains("smtp.username"),
+        "expected the refusal to name smtp.username, got: {err}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn smtp_username_env_ref_resolves() {
+    // SAFETY: unique var name, value read back within this test only.
+    unsafe {
+        std::env::set_var("EPISTOLE_TEST_SMTP_USERNAME", "Rn8Vt3Wc6Ym1Ap4Ez7Resolved");
+    }
+    let toml = valid_config_toml().replace(
+        r#"username = "Rn8Vt3Wc6Ym1Ap4Ez7""#,
+        r#"username = "${EPISTOLE_TEST_SMTP_USERNAME}""#,
+    );
+    let cfg = load(&toml).unwrap();
+    assert_eq!(
+        cfg.smtp.username.expose_secret(),
+        "Rn8Vt3Wc6Ym1Ap4Ez7Resolved"
+    );
+    unsafe {
+        std::env::remove_var("EPISTOLE_TEST_SMTP_USERNAME");
+    }
+}
+
+#[test]
+fn smtp_debug_redacts_username_and_password() {
+    let smtp = super::Smtp {
+        host: "smtp.postmarkapp.com".to_owned(),
+        port: 587,
+        username: SecretString::from("a-real-username-token".to_owned()),
+        password: SecretString::from("a-real-password-token".to_owned()),
+    };
+    let debug = format!("{smtp:?}");
+    assert!(debug.contains("<redacted>"), "{debug}");
+    assert!(!debug.contains("a-real-username-token"), "{debug}");
+    assert!(!debug.contains("a-real-password-token"), "{debug}");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn zero_hourly_cap_is_refused() {
+    let toml = valid_config_toml().replace("send_cap_per_hour = 500", "send_cap_per_hour = 0");
+    let err = load(&toml).unwrap_err().to_string();
+    assert!(err.contains("send_cap_per_hour"), "{err}");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn zero_daily_cap_is_refused() {
+    let toml = valid_config_toml().replace("send_cap_per_day = 2000", "send_cap_per_day = 0");
+    let err = load(&toml).unwrap_err().to_string();
+    assert!(err.contains("send_cap_per_day"), "{err}");
+}
+
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding - the err path is the assertion target"
+)]
+fn daily_cap_smaller_than_hourly_cap_is_refused() {
+    // An unreachable daily budget (tighter than the hourly one) is
+    // almost certainly a transposed pair of numbers, not intent. Only
+    // the hourly cap moves - the baseline day cap (2000) stays put and
+    // is now the smaller of the two.
+    let toml = valid_config_toml().replace("send_cap_per_hour = 500", "send_cap_per_hour = 5000");
+    let err = load(&toml).unwrap_err().to_string();
+    assert!(err.contains("send_cap_per_day"), "{err}");
+    assert!(err.contains("send_cap_per_hour"), "{err}");
 }
