@@ -14,6 +14,10 @@ use tower::ServiceExt;
 mod common;
 use common::test_config;
 
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 fn seed(store: &Store, send_id: SendId, email: &str) {
     let now = OffsetDateTime::now_utc();
     store
@@ -37,6 +41,10 @@ fn seed(store: &Store, send_id: SendId, email: &str) {
         .expect("delivery_put");
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 fn webhook_request(body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")

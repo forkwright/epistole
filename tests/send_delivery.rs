@@ -25,6 +25,10 @@ fn capped_config(data_dir: std::path::PathBuf, hourly: u64, daily: u64) -> Confi
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 fn put_active(store: &Store, email: &str) {
     let now = OffsetDateTime::now_utc();
     store
@@ -39,6 +43,10 @@ fn put_active(store: &Store, email: &str) {
         .expect("subscriber_put");
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 fn send_request(send_id: SendId, subject: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -51,6 +59,10 @@ fn send_request(send_id: SendId, subject: &str) -> Request<Body> {
         .expect("req")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "test scaffolding - panic on fail is the desired signal"
+)]
 async fn json_body(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.expect("body").to_bytes();
     serde_json::from_slice(&bytes).expect("json")
