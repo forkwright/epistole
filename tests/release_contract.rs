@@ -97,6 +97,7 @@ fn release_workflow_preflights_before_the_build_matrix() {
 }
 
 #[test]
+#[expect(clippy::expect_used, reason = "a failed setup step is a test failure")]
 fn release_preflight_hard_fails_on_an_existing_asset() {
     assert!(
         RELEASE_PREFLIGHT_SCRIPT.contains("gh release view"),
