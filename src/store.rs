@@ -497,7 +497,7 @@ impl Store {
 
     /// Key layout for one delivery row: `<send_id>/<email>`. Keeps every
     /// recipient of one send lexically adjacent, and makes "does this
-    /// send_id already have a row for this recipient" ([`Store::delivery_get`])
+    /// `send_id` already have a row for this recipient" ([`Store::delivery_get`])
     /// a single point lookup.
     fn delivery_key(send_id: &SendId, email: &str) -> Vec<u8> {
         format!("{send_id}/{}", email.to_ascii_lowercase()).into_bytes()
@@ -506,7 +506,7 @@ impl Store {
     /// Look up one delivery row by `(send_id, email)`.
     ///
     /// `/send`'s per-recipient idempotency check: a `Some` result means
-    /// this send_id already attempted this recipient, so a retry must
+    /// this `send_id` already attempted this recipient, so a retry must
     /// skip it rather than send (and record) a second time.
     ///
     /// # Errors

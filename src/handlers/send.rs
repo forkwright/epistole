@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::handlers::check_bearer;
 use crate::send_id::SendId;
-use crate::store::{Delivery, DeliveryStatus, Send};
+use crate::store::{Delivery, DeliveryStatus, Send, Subscriber};
 use crate::templates;
 use crate::token::{Token, TokenKind, sign};
 
@@ -124,37 +124,8 @@ pub(crate) async fn post(
         reason: format!("parse JSON: {e}"),
     })?;
 
-    if body.subject.trim().is_empty() {
-        return Err(Error::BadRequest {
-            reason: "subject is empty".to_owned(),
-        });
-    }
-    // WHY: measured on the value actually stored, not the trimmed one, so
-    // the bound covers exactly what the archive pages will render.
-    if body.subject.len() > MAX_SUBJECT_LEN {
-        return Err(Error::BadRequest {
-            reason: format!("subject exceeds {MAX_SUBJECT_LEN} bytes"),
-        });
-    }
-    if body.markdown.trim().is_empty() {
-        return Err(Error::BadRequest {
-            reason: "markdown body is empty".to_owned(),
-        });
-    }
-
-    // 4. Render markdown to HTML, then sanitize. pulldown-cmark by
-    //    default strips raw HTML blocks but it preserves URLs verbatim
-    //    in markdown links (`[click](javascript:alert(1))` becomes
-    //    `<a href="javascript:alert(1)">`). ammonia's default URL-scheme
-    //    allowlist is conservative (http/https/mailto/etc.) — javascript:
-    //    and data: are dropped.
-    let mut html_raw = String::new();
-    let parser = Parser::new_ext(
-        &body.markdown,
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
-    );
-    html::push_html(&mut html_raw, parser);
-    let html_out = ammonia::clean(&html_raw);
+    // 4. Validate + render markdown to HTML — see [`render_body`].
+    let html_out = render_body(&body)?;
 
     let now = OffsetDateTime::now_utc();
     let send_rec = resolve_send(&state, body.send_id, &body.subject, &html_out, now)?;
@@ -169,71 +140,20 @@ pub(crate) async fn post(
     let mut deferred_by_cap = 0usize;
 
     for subscriber in &active {
-        // Per-recipient idempotency: a retry of this exact send_id must
-        // not re-send (or re-record) a recipient it already reached.
-        if state
-            .store
-            .delivery_get(&send_rec.id, &subscriber.email)?
-            .is_some()
-        {
-            already_delivered += 1;
-            continue;
-        }
-
-        let admitted = state
-            .store
-            .try_reserve_send_slot(
-                &hour_bucket,
-                &day_bucket,
-                state.config.send_cap_per_hour,
-                state.config.send_cap_per_day,
-            )
-            .await?;
-        if !admitted {
-            deferred_by_cap += 1;
-            continue;
-        }
-
-        let exp_unix = now.unix_timestamp() + UNSUBSCRIBE_LINK_TTL.whole_seconds();
-        let token = Token::new(
-            TokenKind::Unsubscribe,
-            subscriber.email.clone(),
-            exp_unix,
-            subscriber.generation,
-        );
-        let signed = sign(&token, state.config.token_secret.expose_secret().as_bytes())?;
-        let unsubscribe_url = format!("{}/unsubscribe?token={signed}", state.config.base_url);
-        let one_click_url = format!(
-            "{}/unsubscribe/one-click?token={signed}",
-            state.config.base_url
-        );
-
-        let message = build_message(
-            &state.config,
+        match deliver_to_recipient(
+            &state,
             &send_rec,
-            &subscriber.email,
-            &unsubscribe_url,
-            &one_click_url,
-        );
-        let (status, error) = match message {
-            Ok(message) => match state.mailer.send(message).await {
-                Ok(()) => (DeliveryStatus::Sent, None),
-                Err(e) => (DeliveryStatus::Failed, Some(e.to_string())),
-            },
-            Err(e) => (DeliveryStatus::Failed, Some(e.to_string())),
-        };
-
-        state.store.delivery_put(&Delivery {
-            send_id: send_rec.id,
-            email: subscriber.email.clone(),
-            status,
-            at: OffsetDateTime::now_utc(),
-            error,
-        })?;
-
-        match status {
-            DeliveryStatus::Sent => sent += 1,
-            _ => failed += 1,
+            subscriber,
+            &hour_bucket,
+            &day_bucket,
+            now,
+        )
+        .await?
+        {
+            RecipientOutcome::Sent => sent += 1,
+            RecipientOutcome::Failed => failed += 1,
+            RecipientOutcome::AlreadyDelivered => already_delivered += 1,
+            RecipientOutcome::DeferredByCap => deferred_by_cap += 1,
         }
     }
 
@@ -253,6 +173,145 @@ pub(crate) async fn post(
         already_delivered,
         deferred_by_cap,
     }))
+}
+
+/// Validate `body`'s `subject`/`markdown`, then render the markdown to
+/// sanitized HTML.
+///
+/// pulldown-cmark by default strips raw HTML blocks but it preserves
+/// URLs verbatim in markdown links (`[click](javascript:alert(1))`
+/// becomes `<a href="javascript:alert(1)">`). ammonia's default
+/// URL-scheme allowlist is conservative (http/https/mailto/etc.) —
+/// `javascript:` and `data:` are dropped.
+///
+/// # Errors
+///
+/// Returns [`Error::BadRequest`] on an empty subject, a subject over
+/// [`MAX_SUBJECT_LEN`] bytes, or empty markdown.
+fn render_body(body: &Body) -> Result<String> {
+    if body.subject.trim().is_empty() {
+        return Err(Error::BadRequest {
+            reason: "subject is empty".to_owned(),
+        });
+    }
+    // WHY: measured on the value actually stored, not the trimmed one, so
+    // the bound covers exactly what the archive pages will render.
+    if body.subject.len() > MAX_SUBJECT_LEN {
+        return Err(Error::BadRequest {
+            reason: format!("subject exceeds {MAX_SUBJECT_LEN} bytes"),
+        });
+    }
+    if body.markdown.trim().is_empty() {
+        return Err(Error::BadRequest {
+            reason: "markdown body is empty".to_owned(),
+        });
+    }
+
+    let mut html_raw = String::new();
+    let parser = Parser::new_ext(
+        &body.markdown,
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH,
+    );
+    html::push_html(&mut html_raw, parser);
+    Ok(ammonia::clean(&html_raw))
+}
+
+/// Which `Reply` counter one recipient's delivery attempt falls into.
+enum RecipientOutcome {
+    /// Relay accepted the message.
+    Sent,
+    /// Composition failed or the relay rejected the message.
+    Failed,
+    /// A `Delivery` row for this `(send_id, email)` already existed —
+    /// the idempotency path.
+    AlreadyDelivered,
+    /// The hourly or daily send cap was reached; not attempted this call.
+    DeferredByCap,
+}
+
+/// Attempt delivery to one recipient of `send_rec`: the per-recipient
+/// idempotency check, cap admission, message composition + send, and the
+/// resulting [`Delivery`] ledger write.
+///
+/// # Errors
+///
+/// Returns [`Error::Store`] on a fjall failure, [`Error::Config`] if
+/// token signing cannot be initialized. A relay or composition failure
+/// does NOT surface as an `Err` here — see [`build_message`] — it is
+/// recorded as a `Failed` delivery and reflected in the returned
+/// [`RecipientOutcome`] instead.
+async fn deliver_to_recipient(
+    state: &AppState,
+    send_rec: &Send,
+    subscriber: &Subscriber,
+    hour_bucket: &str,
+    day_bucket: &str,
+    now: OffsetDateTime,
+) -> Result<RecipientOutcome> {
+    // Per-recipient idempotency: a retry of this exact send_id must not
+    // re-send (or re-record) a recipient it already reached.
+    if state
+        .store
+        .delivery_get(&send_rec.id, &subscriber.email)?
+        .is_some()
+    {
+        return Ok(RecipientOutcome::AlreadyDelivered);
+    }
+
+    let admitted = state
+        .store
+        .try_reserve_send_slot(
+            hour_bucket,
+            day_bucket,
+            state.config.send_cap_per_hour,
+            state.config.send_cap_per_day,
+        )
+        .await?;
+    if !admitted {
+        return Ok(RecipientOutcome::DeferredByCap);
+    }
+
+    let exp_unix = now.unix_timestamp() + UNSUBSCRIBE_LINK_TTL.whole_seconds();
+    let token = Token::new(
+        TokenKind::Unsubscribe,
+        subscriber.email.clone(),
+        exp_unix,
+        subscriber.generation,
+    );
+    let signed = sign(&token, state.config.token_secret.expose_secret().as_bytes())?;
+    let unsubscribe_url = format!("{}/unsubscribe?token={signed}", state.config.base_url);
+    let one_click_url = format!(
+        "{}/unsubscribe/one-click?token={signed}",
+        state.config.base_url
+    );
+
+    let message = build_message(
+        &state.config,
+        send_rec,
+        &subscriber.email,
+        &unsubscribe_url,
+        &one_click_url,
+    );
+    let (status, error) = match message {
+        Ok(message) => match state.mailer.send(message).await {
+            Ok(()) => (DeliveryStatus::Sent, None),
+            Err(e) => (DeliveryStatus::Failed, Some(e.to_string())),
+        },
+        Err(e) => (DeliveryStatus::Failed, Some(e.to_string())),
+    };
+
+    state.store.delivery_put(&Delivery::new(
+        send_rec.id,
+        subscriber.email.clone(),
+        status,
+        OffsetDateTime::now_utc(),
+        error,
+    ))?;
+
+    Ok(match status {
+        DeliveryStatus::Sent => RecipientOutcome::Sent,
+        _ => RecipientOutcome::Failed,
+    })
 }
 
 /// UTC-hour rate-limit bucket key, e.g. `2026081518` — matches

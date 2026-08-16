@@ -407,6 +407,9 @@ data_dir = "{data_dir}"
 base_url = "https://letters.example.com"
 token_secret = "Yk9mNTBjZWE3OTIzNzg5YzkzMjg0NWE2YWRkOWM4MTM"
 send_auth_token = "4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e"
+webhook_auth_token = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
+send_cap_per_hour = 500
+send_cap_per_day = 2000
 
 [brand]
 name = "Test Brand"
