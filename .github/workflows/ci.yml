@@ -79,11 +79,45 @@ jobs:
       - name: Run nextest
         run: cargo nextest run --build-jobs 8 --test-threads 8
 
+  # WHY a separate job (#107): `jobs.<id>.if` cannot read the `secrets`
+  # context directly (only github/needs/vars/inputs are available there,
+  # per GitHub's context-availability table) -- `secrets` IS available
+  # inside a step's `${{ }}` expressions, same as the `token:` lines
+  # below already rely on, so a one-step job computes the boolean and
+  # publishes it as an output kanon-lint's job-level `if` can read via
+  # `needs`.
+  check-fleet-repo-token:
+    name: Check FLEET_REPO_TOKEN
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - id: check
+        run: echo "present=${{ secrets.FLEET_REPO_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
   kanon-lint:
     name: kanon-lint
+    needs: check-fleet-repo-token
     runs-on: ubuntu-latest
-    env:
-      FLEET_REPO_TOKEN: ${{ secrets.FLEET_REPO_TOKEN }}
+    # WHY a job-level `if` instead of per-step `if: env.FLEET_REPO_TOKEN !=
+    # ''` guards plus a warning-then-exit-0 fallback step (#107): a
+    # per-step guard leaves the JOB itself with no failing step, so it
+    # reports SUCCESSFUL even on a hosted run that linted nothing --
+    # `::warning::` marks its own step green too, and FLEET_REPO_TOKEN is
+    # not configured for this repo's hosted runners, so kanon-lint showed
+    # green on every PR having linted nothing (confirmed empirically:
+    # `kanon gate --tier full` on verda-build found real findings that the
+    # hosted check reported clean on the same commit). A job-level `if`
+    # instead reports the WHOLE JOB as SKIPPED -- GitHub's own "did not
+    # run" status, distinct in the checks list from both a pass and a
+    # fail, so a missing credential can never be misread as a clean lint.
+    # `kanon-lint` is deliberately NOT in main's required-status-checks
+    # (`cargo audit`, `cargo deny`, `gate / gate` only -- verified via
+    # `gh api repos/forkwright/epistole/branches/main/protection`), so a
+    # skip here blocks no merge; provisioning `FLEET_REPO_TOKEN` for this
+    # repo (or a public kanon binary install path that needs no
+    # cross-repo checkout) turns this back into a real, running gate.
+    if: needs.check-fleet-repo-token.outputs.present == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,7 +125,6 @@ jobs:
           persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.FLEET_REPO_TOKEN != ''
         with:
           repository: forkwright/kanon
           ref: 61211a19ea88a4186a77d417a4469d4a3dbdf1b2
@@ -100,7 +133,6 @@ jobs:
           persist-credentials: false
 
       - name: Checkout kanon private build dependency
-        if: env.FLEET_REPO_TOKEN != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: forkwright/logismos
@@ -109,26 +141,16 @@ jobs:
           persist-credentials: false
 
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-        if: env.FLEET_REPO_TOKEN != ''
         with:
           cache: false
 
       - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
-        if: env.FLEET_REPO_TOKEN != ''
         with:
           workspaces: kanon
 
       - name: Install kanon
-        if: env.FLEET_REPO_TOKEN != ''
         run: cargo install --path kanon/crates/pragma --bin kanon --no-default-features --locked
 
       - name: Lint with kanon
-        if: env.FLEET_REPO_TOKEN != ''
         working-directory: epistole
         run: kanon lint . --summary
-
-      - name: Report skipped kanon lint
-        if: env.FLEET_REPO_TOKEN == ''
-        run: |
-          echo "::warning::FLEET_REPO_TOKEN is not set; kanon CLI cannot be built on hosted runners."
-          echo "::warning::Run kanon lint . --summary locally until the public kanon binary install path is available."
