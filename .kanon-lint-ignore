@@ -12,6 +12,15 @@ RUST/pub-visibility:src/token.rs
 # -- see the in-file WHY comment above the `jobs:` block).
 YAML/missing-concurrency:.github/workflows/gate-attestation.yml
 
+# False positive: this workflow builds and publishes nothing -- it creates
+# a throwaway scratch tag/release, uploads a scratch file to it twice to
+# prove the second upload is refused, and deletes both in an `if: always()`
+# step. There is no Tier-U artifact here for attest-build-provenance or
+# attest-sbom to attest against; SLSA/SBOM coverage for the real release
+# artifacts is in release.yml, which this rule does not flag (see
+# tests/release_contract.rs for #70's positive coverage of that file).
+CI/release-yml-missing-attestation:.github/workflows/release-collision-test.yml
+
 # False positive, not a real formatting problem: these two lines are plain
 # TOML strings whose prose happens to contain a literal `{...}` (documenting
 # a JSON webhook body shape), which the TOML/inline-table-too-long checker

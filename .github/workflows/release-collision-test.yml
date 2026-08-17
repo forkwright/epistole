@@ -1,0 +1,78 @@
+name: Release Collision Test
+
+# WHY(#70): tests/release_contract.rs proves the shipped release.yml and
+# scripts pass gh no overwrite flag. That is necessary but not sufficient --
+# it does not prove `gh release upload` actually refuses a same-name
+# re-upload against the real GitHub API. This job runs the exact shared
+# script release.yml calls (.github/scripts/release-upload.sh) against a
+# scratch tag/release in this repo and watches the second upload fail,
+# then deletes the scratch release/tag regardless of outcome.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/scripts/release-upload.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-collision-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/release-upload.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-collision-test.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  collision-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create scratch tag and release
+        id: scratch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="collision-test-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --notes "scratch release for #70's collision test -- deleted at the end of this job" \
+            --prerelease
+
+      - name: First upload succeeds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "first" > asset.txt
+          bash .github/scripts/release-upload.sh "${{ steps.scratch.outputs.tag }}" asset.txt
+
+      - name: Second upload of the same asset name is a hard error
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "second-different-bytes" > asset.txt
+          if bash .github/scripts/release-upload.sh "${{ steps.scratch.outputs.tag }}" asset.txt; then
+            echo "::error::release-upload.sh accepted a same-name re-upload -- append-once is broken" >&2
+            exit 1
+          fi
+          echo "confirmed: re-upload to an existing asset name was refused"
+
+      - name: Clean up scratch tag and release
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "${{ steps.scratch.outputs.tag }}" --yes --cleanup-tag || true

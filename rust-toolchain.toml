@@ -1,3 +1,6 @@
 [toolchain]
-channel = "stable"
+# WHY(#70): an exact MAJOR.MINOR.PATCH release, not "stable" -- the
+# floating channel let a rerun pick up a different compiler than the
+# first run for the same tag. Matches Cargo.toml's rust-version MSRV.
+channel = "1.94.0"
 components = ["rustfmt", "clippy"]
