@@ -2,7 +2,7 @@
 name = "epistole"
 version = "0.2.2"
 edition = "2024"
-license = "AGPL-3.0-or-later"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/forkwright/epistole"
 rust-version = "1.94"
 description = "Self-hosted newsletter service for fleet web properties - axum + fjall + maud + lettre."
