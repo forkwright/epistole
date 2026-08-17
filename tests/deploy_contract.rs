@@ -168,10 +168,10 @@ fn caddy_site_label_does_not_append_a_second_tld() {
 /// below assert the Caddyfile's structural shape rather than the
 /// presence of some text.
 fn balanced_block<'a>(haystack: &'a str, header: &str) -> &'a str {
-    let after_header = haystack
-        .find(header)
-        .map(|i| &haystack[i + header.len()..])
-        .unwrap_or_else(|| panic!("expected `{header}` in:\n{haystack}"));
+    let after_header = haystack.find(header).map_or_else(
+        || panic!("expected `{header}` in:\n{haystack}"),
+        |i| &haystack[i + header.len()..],
+    );
     let brace_at = after_header
         .find('{')
         .unwrap_or_else(|| panic!("expected `{{` after `{header}` in:\n{haystack}"));
