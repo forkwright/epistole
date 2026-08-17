@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2](https://github.com/forkwright/epistole/compare/v0.2.1...v0.2.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* **ci:** stop dependabot auto-merge blocking on kanon-lint SKIPPED bucket ([#113](https://github.com/forkwright/epistole/issues/113)) ([08b8f40](https://github.com/forkwright/epistole/commit/08b8f40e3d414f921e82384974e49a4354de3567))
+* **deploy:** redact NPM access-log token query param; verify [#42](https://github.com/forkwright/epistole/issues/42) already fixed ([#114](https://github.com/forkwright/epistole/issues/114)) ([0678d77](https://github.com/forkwright/epistole/commit/0678d77a05e002d949d980a444b9e415ba6516dd))
+* **release:** pin build inputs and make published assets append-only ([#115](https://github.com/forkwright/epistole/issues/115)) ([b03e97d](https://github.com/forkwright/epistole/commit/b03e97de8653f59b24f0bcf569756730ab4eeb39))
+
 ## [0.2.1](https://github.com/forkwright/epistole/compare/v0.2.0...v0.2.1) (2026-08-16)
 
 
