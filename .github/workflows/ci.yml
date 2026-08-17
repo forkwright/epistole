@@ -79,6 +79,16 @@ jobs:
       - name: Run nextest
         run: cargo nextest run --build-jobs 8 --test-threads 8
 
+  test-auto-merge-guard:
+    name: Test auto-merge guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Regression-test the CI-check guard
+        run: .github/scripts/test-dependabot-auto-merge-checks.sh
+
   # WHY a separate job (#107): `jobs.<id>.if` cannot read the `secrets`
   # context directly (only github/needs/vars/inputs are available there,
   # per GitHub's context-availability table) -- `secrets` IS available

@@ -39,7 +39,7 @@ jobs:
           fi
 
           checks="$(gh pr checks "$PR_URL" --json name,bucket)"
-          for check in Format Check Clippy Test kanon-lint "cargo deny" "cargo audit"; do
+          for check in Format Check Clippy Test "cargo deny" "cargo audit"; do
             if ! jq --exit-status --arg check "$check" \
               'any(.[]; .name == $check and .bucket == "pass")' \
               <<<"$checks" >/dev/null; then
@@ -47,6 +47,31 @@ jobs:
               exit 1
             fi
           done
+
+          # WHY kanon-lint is checked separately, gated on "fail" only, not
+          # folded into the `bucket == "pass"` loop above: kanon-lint's
+          # job-level `if` reports GitHub's own SKIPPED status --
+          # `bucket == "skipping"`, never "pass" -- whenever FLEET_REPO_TOKEN
+          # is absent from hosted runners (ci.yml, by design; see its WHY
+          # block), which is true today and for the foreseeable future
+          # (epistole#107). kanon-lint is also deliberately NOT one of
+          # main's required-status-checks (`cargo audit`, `cargo deny`,
+          # `gate / gate` only), so a SKIP here was never meant to block a
+          # merge. Folding it into the loop above made every dependabot PR
+          # refuse auto-merge unconditionally (epistole#111) -- a SKIP
+          # carries no information about the code, so only a genuine FAIL
+          # (the job ran and found something) may block. A future edit to
+          # this block that reintroduces that shape is caught by
+          # `.github/scripts/test-dependabot-auto-merge-checks.sh`, wired
+          # into CI (see ci.yml's `test-auto-merge-guard` job), which
+          # extracts and exercises this exact step against synthetic `gh
+          # pr checks` output.
+          if jq --exit-status \
+            'any(.[]; .name == "kanon-lint" and .bucket == "fail")' \
+            <<<"$checks" >/dev/null; then
+            echo "CI check did not pass: kanon-lint; refusing auto-merge." >&2
+            exit 1
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

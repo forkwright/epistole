@@ -21,3 +21,16 @@ YAML/missing-concurrency:.github/workflows/gate-attestation.yml
 # #3111 lands.
 TOML/inline-table-too-long:_llm/current_state.toml
 TOML/inline-table-too-long:_llm/decisions.toml
+
+# `Mailer` falls under ARCHITECTURE.md's own documented exception to
+# trait-impl-colocation ("unless the trait is part of the public API
+# contract ... or test mocking"): it exists precisely so `StubMailer` can
+# stand in for `SmtpMailer` in tests without a live relay (src/mailer.rs:19-32
+# WHY block), and `StubMailer` is `pub` for that reason (src/mailer.rs:106-110).
+# `epistole` is also a single `[package]` (Cargo.toml has no `[workspace]`
+# table), so the rule's prescribed fix -- move the trait to the lowest crate
+# that calls through it -- has no target crate to move to; splitting one into
+# existence solely to relocate this trait would be a contrived structural
+# change with no isolation benefit, the same anti-pattern the standard warns
+# against in the opposite direction. See epistole#108.
+ARCHITECTURE/trait-impl-colocation:src/mailer.rs
