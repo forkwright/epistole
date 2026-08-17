@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Stub `gh` for testing the dependabot-auto-merge CI-check guard without a
-# live PR. Handles only the two `gh pr checks` shapes the guard calls;
-# anything else fails loudly rather than returning a misleading default.
+# WHY: stubs `gh` for testing the dependabot-auto-merge CI-check guard
+# without a live PR. Handles only the two `gh pr checks` shapes the guard
+# calls; anything else fails loudly rather than returning a misleading
+# default.
 #
 # CHECKS_JSON (env, required): the `--json name,bucket` payload to return.
 set -euo pipefail
@@ -12,9 +13,9 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "checks" ]]; then
   shift 2
   for arg in "$@"; do
     if [[ "$arg" == "--required" ]]; then
-      # First call in the guard: --watch --interval 30 --required. The
-      # fixture only exercises the second call's bucket interpretation, so
-      # required-check waiting always succeeds here.
+      # WHY: the first call in the guard is --watch --interval 30
+      # --required; the fixture only exercises the second call's bucket
+      # interpretation, so required-check waiting always succeeds here.
       exit 0
     fi
   done

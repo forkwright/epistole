@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Regression test for the "Wait for CI checks to pass" guard in
+# NOTE: regression test for the "Wait for CI checks to pass" guard in
 # dependabot-auto-merge.yml.
 set -euo pipefail
 
-# Extracts that step's literal `run: |` body from the SHIPPED workflow
-# file (not a re-implementation of its logic) and runs it, with `gh`
-# stubbed, against synthetic `gh pr checks` output covering every bucket
-# the kanon-lint job can report.
+# WHY: extracts that step's literal `run: |` body from the SHIPPED
+# workflow file (not a re-implementation of its logic) and runs it, with
+# `gh` stubbed, against synthetic `gh pr checks` output covering every
+# bucket the kanon-lint job can report.
 #
 # WHY this exists (epistole#111): the guard folded kanon-lint into a
 # uniform `bucket == "pass"` loop. kanon-lint job-level `if`-skips itself
@@ -23,8 +23,9 @@ readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && cd .. && pwd)"
 readonly WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/dependabot-auto-merge.yml"
 readonly STEP_NAME="Wait for CI checks to pass"
 
-# Dependency-free literal-block-scalar extractor (awk + bash only -- no
-# yq/python-yaml required, so this runs unmodified on any hosted runner).
+# WHY: dependency-free literal-block-scalar extractor (awk + bash only --
+# no yq/python-yaml required, so this runs unmodified on any hosted
+# runner).
 extract_run_block() {
   local file="$1" step_name="$2"
   awk -v step="- name: ${step_name}" '
@@ -115,17 +116,19 @@ check_case() {
 
 failures=0
 
-# kanon-lint SKIPPED (FLEET_REPO_TOKEN absent, epistole#107/#109's live
-# state) must NOT block auto-merge -- this is the epistole#111 regression.
+# WHY: kanon-lint SKIPPED (FLEET_REPO_TOKEN absent, epistole#107/#109's
+# live state) must NOT block auto-merge -- this is the epistole#111
+# regression.
 check_case "kanon-lint skipping is treated as acceptable" "skipping" 0 \
   || failures=$((failures + 1))
 
-# kanon-lint genuinely running and finding something MUST still block.
+# WHY: kanon-lint genuinely running and finding something MUST still
+# block.
 check_case "kanon-lint fail still refuses auto-merge" "fail" 1 \
   || failures=$((failures + 1))
 
-# kanon-lint passing outright (FLEET_REPO_TOKEN provisioned some day) is
-# unaffected.
+# WHY: kanon-lint passing outright (FLEET_REPO_TOKEN provisioned some
+# day) is unaffected.
 check_case "kanon-lint pass is unaffected" "pass" 0 \
   || failures=$((failures + 1))
 
