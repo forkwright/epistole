@@ -157,6 +157,65 @@ fn caddy_site_label_does_not_append_a_second_tld() {
     );
 }
 
+/// Returns the balanced `{ ... }` body that follows the first occurrence
+/// of `header` in `haystack`, exclusive of the braces.
+///
+/// WHY: a bare `haystack.contains(token)` check cannot tell a token that
+/// sits where the grammar requires it from one that sits anywhere else in
+/// the file (or is itself a substring of some other, wrong token — a
+/// `.contains("wrap json")` check would still pass against a stray
+/// comment). Extracting the actual `{}` nesting is what makes the checks
+/// below assert the Caddyfile's structural shape rather than the
+/// presence of some text.
+fn balanced_block<'a>(haystack: &'a str, header: &str) -> &'a str {
+    let after_header = haystack.find(header).map_or_else(
+        || panic!("expected `{header}` in:\n{haystack}"),
+        |i| &haystack[i + header.len()..],
+    );
+    let brace_at = after_header
+        .find('{')
+        .unwrap_or_else(|| panic!("expected `{{` after `{header}` in:\n{haystack}"));
+    let body = &after_header[brace_at + 1..];
+    let mut depth = 1i32;
+    for (i, c) in body.char_indices() {
+        depth += match c {
+            '{' => 1,
+            '}' => -1,
+            _ => 0,
+        };
+        if depth == 0 {
+            return &body[..i];
+        }
+    }
+    panic!("unbalanced braces after `{header}` in:\n{haystack}");
+}
+
+/// Non-empty, non-comment lines of `block` that sit at brace-depth zero
+/// relative to `block` itself — i.e. `block`'s direct children, the way a
+/// Caddyfile parser would see them, not lines nested inside some further
+/// `{ ... }` group two levels down.
+fn depth_zero_lines(block: &str) -> Vec<&str> {
+    let mut depth = 0i32;
+    let mut lines = Vec::new();
+    for raw in block.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if depth == 0 {
+            lines.push(line);
+        }
+        for c in line.chars() {
+            depth += match c {
+                '{' => 1,
+                '}' => -1,
+                _ => 0,
+            };
+        }
+    }
+    lines
+}
+
 #[test]
 fn caddy_access_log_redacts_the_token_query_parameter() {
     // forkwright/epistole#66: /confirm, /unsubscribe, and
@@ -167,15 +226,53 @@ fn caddy_access_log_redacts_the_token_query_parameter() {
     // persist every one of those tokens to
     // /var/log/caddy/letters-access.log. Proxy-style companion to the
     // application-level capture tests in tests/tracing_redaction.rs.
+    //
+    // NOTE: this walks the actual `{}` nesting rather than doing a bare
+    // substring search over the whole file, because a substring search
+    // cannot distinguish the grammatically-correct `wrap json` subdirective
+    // Caddy's `logging.FilterEncoder.UnmarshalCaddyfile` recognizes from a
+    // similar-looking but unrecognized token (e.g. the `wrapper json` typo
+    // this test previously let through, PR #105) — Caddy's own parser
+    // treats any subdirective name it does not recognize inside a `filter`
+    // block as an implicit field declaration ("if unknown, assume it's a
+    // field so that the config can be flat" —
+    // caddyserver/caddy modules/logging/filterencoder.go), so a typo here
+    // fails Caddyfile validation rather than degrading gracefully.
+    // `caddy-validate` in .github/workflows/ci.yml runs the real `caddy
+    // validate` parser over this exact file as the ground-truth companion
+    // to this structural check.
+    let filter_block = balanced_block(CADDY_SNIPPET, "format filter");
+    let filter_lines = depth_zero_lines(filter_block);
+
     assert!(
-        CADDY_SNIPPET.contains("format filter"),
-        "access log must use Caddy's filter encoder, not plain `format json`, \
-         to redact the token query parameter"
+        filter_lines.contains(&"wrap json"),
+        "the `filter` encoder must wrap a `json` encoder via Caddy's `wrap` \
+         subdirective, directly inside `format filter {{ ... }}` (found: {filter_lines:?})"
     );
     assert!(
-        CADDY_SNIPPET.contains("request>uri query") && CADDY_SNIPPET.contains("delete token"),
-        "the uri's `token` query parameter must be deleted before the request \
-         reaches the access log"
+        filter_lines
+            .iter()
+            .any(|l| l.starts_with("fields") && l.ends_with('{')),
+        "the `filter` encoder must declare a `fields {{ ... }}` block directly \
+         inside `format filter {{ ... }}` (found: {filter_lines:?})"
+    );
+
+    let fields_block = balanced_block(filter_block, "fields");
+    let fields_lines = depth_zero_lines(fields_block);
+    assert!(
+        fields_lines
+            .iter()
+            .any(|l| l.starts_with("request>uri query") && l.ends_with('{')),
+        "the `fields` block must filter `request>uri query` directly \
+         (found: {fields_lines:?})"
+    );
+
+    let query_block = balanced_block(fields_block, "request>uri query");
+    let query_lines = depth_zero_lines(query_block);
+    assert!(
+        query_lines.contains(&"delete token"),
+        "the `request>uri query` filter must `delete token` directly \
+         (found: {query_lines:?})"
     );
 }
 

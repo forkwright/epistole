@@ -105,6 +105,38 @@ jobs:
       - id: check
         run: echo "present=${{ secrets.FLEET_REPO_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
 
+  caddy-validate:
+    name: Caddy config validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install caddy
+        run: |
+          set -euo pipefail
+          curl -fsSL -o caddy.tar.gz \
+            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
+          echo "8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9  caddy.tar.gz" | sha512sum -c -
+          tar xzf caddy.tar.gz caddy
+          sudo install -m 0755 caddy /usr/local/bin/caddy
+      - name: Validate deploy/Caddyfile.snippet against the real Caddy parser
+        # WHY: deploy/Caddyfile.snippet is config text no other job runs through
+        # Caddy before it reaches production. tests/deploy_contract.rs pins its
+        # structural shape at the Rust level, but a structural check knows only
+        # which KEY the grammar puts where — not which subdirective NAMES the
+        # real parser recognizes. A misspelled subdirective parses fine
+        # structurally, fails Caddy's own config load, and silently takes the
+        # token redaction out of force. Only the real parser catches that.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/caddy-validate-log
+          sed \
+            -e 's/<consumer-domain>/example.com/' \
+            -e 's#/var/log/caddy/letters-access.log#/tmp/caddy-validate-log/letters-access.log#' \
+            deploy/Caddyfile.snippet > /tmp/Caddyfile
+          caddy validate --adapter caddyfile --config /tmp/Caddyfile
+
   kanon-lint:
     name: kanon-lint
     needs: check-fleet-repo-token
