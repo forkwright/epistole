@@ -21,6 +21,7 @@ env:
 
 jobs:
   fmt:
+    timeout-minutes: 15
     name: Format
     runs-on: ubuntu-latest
     steps:
@@ -35,6 +36,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   check:
+    timeout-minutes: 15
     name: Check
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +51,7 @@ jobs:
         run: cargo check --all-targets --jobs 8
 
   clippy:
+    timeout-minutes: 15
     name: Clippy
     runs-on: ubuntu-latest
     steps:
@@ -64,6 +67,7 @@ jobs:
         run: cargo clippy --all-targets --jobs 8 -- -D warnings
 
   nextest:
+    timeout-minutes: 15
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -80,6 +84,7 @@ jobs:
         run: cargo nextest run --build-jobs 8 --test-threads 8
 
   test-auto-merge-guard:
+    timeout-minutes: 15
     name: Test auto-merge guard
     runs-on: ubuntu-latest
     steps:
@@ -97,6 +102,7 @@ jobs:
   # publishes it as an output kanon-lint's job-level `if` can read via
   # `needs`.
   check-fleet-repo-token:
+    timeout-minutes: 15
     name: Check FLEET_REPO_TOKEN
     runs-on: ubuntu-latest
     outputs:
@@ -106,6 +112,7 @@ jobs:
         run: echo "present=${{ secrets.FLEET_REPO_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
 
   caddy-validate:
+    timeout-minutes: 15
     name: Caddy config validates
     runs-on: ubuntu-latest
     steps:
@@ -138,6 +145,7 @@ jobs:
           caddy validate --adapter caddyfile --config /tmp/Caddyfile
 
   kanon-lint:
+    timeout-minutes: 15
     name: kanon-lint
     needs: check-fleet-repo-token
     runs-on: ubuntu-latest
