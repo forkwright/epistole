@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/forkwright/epistole/compare/v0.2.2...v0.2.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deploy:** restore the Caddy wrap directive and validate it against the real parser ([0a825e4](https://github.com/forkwright/epistole/commit/0a825e459a04777e7c5b5d89f01a6bd9bca44bcd)), closes [#66](https://github.com/forkwright/epistole/issues/66)
+
 ## [0.2.2](https://github.com/forkwright/epistole/compare/v0.2.1...v0.2.2) (2026-08-17)
 
 
