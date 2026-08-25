@@ -78,7 +78,13 @@ permissions:
 
 jobs:
   gate:
-    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@d74efb1d2d87ec86717dad5d42d468f6e3cf7994 # main
+    # WHY @main, not a pinned SHA: forkwright/.github publishes no tags, so a
+    # SHA pin here has no dependabot bump path and just freezes -- akroasis,
+    # hamma and pinax all sat on stale pins this way, one behind a fix for a
+    # race in this very reusable. forkwright/.github is first-party -- same
+    # org, same trust boundary -- not the third-party supply-chain case a SHA
+    # pin defends against. A floating ref can't go stale.
+    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@main
     with:
       # WHY defaults kept as-is: epistole has its own rust-toolchain.toml
       # (channel = "1.94.0", pinned per #70) -- auto-detect applies, no
