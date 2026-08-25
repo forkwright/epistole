@@ -1,93 +1,55 @@
+# WHY a caller rather than a local copy: this logic guards auto-merge, and a
+# copy is how this repo's version drifted from the fixed one -- the vendored
+# step snapshotted `gh pr checks` once via `--watch --required`, so a check
+# that had not yet reported when the watch returned was invisible to the
+# per-check loop that ran right after it, and a dependabot PR whose real CI
+# was still green showed a failed `auto-merge` job (epistole#125). The
+# reusable instead polls until every required check GROUP reaches a terminal
+# state before judging it. One implementation, one place to fix.
 name: Dependabot Auto-Merge
 
 on:
   pull_request:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+# WHY declared here as well as in the reusable: a called workflow's permissions
+# can only narrow what the caller grants, never widen it. Stating them at the
+# caller keeps the ceiling visible in the repo that owns the risk rather than
+# only in another repository's file.
 permissions:
   contents: write
   pull-requests: write
 
+# WHY a caller-level concurrency block: the reusable declares none of its own
+# for this workflow (unlike hybrid-gate.yml, which does, and would self-cancel
+# against a caller-level duplicate). Without this block, a superseded push to
+# a dependabot PR leaves its earlier run racing the newer one -- both waiting
+# on checks, both able to merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# NOTE: the vendored copy this replaces also refused auto-merge whenever this
+# repo's own `kanon-lint` job (see ci.yml) reported "fail". The fleet reusable
+# takes no inputs (`on: workflow_call: {}`) and has no way to know about a
+# repo-local check by that name, so that behavior is dropped, not carried
+# forward. It drops no live protection today: kanon-lint is not one of main's
+# required-status-checks and, with FLEET_REPO_TOKEN absent from hosted
+# runners, its job-level `if` always reports SKIPPED, never FAIL (see ci.yml's
+# WHY block). If FLEET_REPO_TOKEN is ever provisioned and kanon-lint starts
+# genuinely running, add it to main's required-status-checks so branch
+# protection blocks the merge upstream of this workflow -- don't re-vendor
+# this file to get a local check back.
 jobs:
   auto-merge:
-    runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
-    steps:
-      - name: Fetch Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Wait for CI checks to pass
-        if: >-
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           steps.metadata.outputs.dependency-type == 'direct:development')
-        run: |
-          # WHY exit 1, not exit 0: this step is a GUARD, and `exit 0` makes
-          # it SUCCEED. The merge steps below gate only on
-          # `steps.metadata.outputs.update-type`, never on this step's
-          # outcome, and Actions skips a later step only when an earlier one
-          # FAILS -- so a zero exit printed a refusal and then merged anyway.
-          if ! gh pr checks "$PR_URL" --watch --interval 30 --required; then
-            echo "Required CI checks did not pass; refusing auto-merge." >&2
-            exit 1
-          fi
-
-          checks="$(gh pr checks "$PR_URL" --json name,bucket)"
-          for check in Format Check Clippy Test "cargo deny" "cargo audit"; do
-            if ! jq --exit-status --arg check "$check" \
-              'any(.[]; .name == $check and .bucket == "pass")' \
-              <<<"$checks" >/dev/null; then
-              echo "CI check did not pass: $check; refusing auto-merge." >&2
-              exit 1
-            fi
-          done
-
-          # WHY kanon-lint is checked separately, gated on "fail" only, not
-          # folded into the `bucket == "pass"` loop above: kanon-lint's
-          # job-level `if` reports GitHub's own SKIPPED status --
-          # `bucket == "skipping"`, never "pass" -- whenever FLEET_REPO_TOKEN
-          # is absent from hosted runners (ci.yml, by design; see its WHY
-          # block), which is true today and for the foreseeable future
-          # (epistole#107). kanon-lint is also deliberately NOT one of
-          # main's required-status-checks (`cargo audit`, `cargo deny`,
-          # `gate / gate` only), so a SKIP here was never meant to block a
-          # merge. Folding it into the loop above made every dependabot PR
-          # refuse auto-merge unconditionally (epistole#111) -- a SKIP
-          # carries no information about the code, so only a genuine FAIL
-          # (the job ran and found something) may block. A future edit to
-          # this block that reintroduces that shape is caught by
-          # `.github/scripts/test-dependabot-auto-merge-checks.sh`, wired
-          # into CI (see ci.yml's `test-auto-merge-guard` job), which
-          # extracts and exercises this exact step against synthetic `gh
-          # pr checks` output.
-          if jq --exit-status \
-            'any(.[]; .name == "kanon-lint" and .bucket == "fail")' \
-            <<<"$checks" >/dev/null; then
-            echo "CI check did not pass: kanon-lint; refusing auto-merge." >&2
-            exit 1
-          fi
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto-merge patch updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: gh pr merge --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto-merge minor dev dependency updates
-        if: >-
-          steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-          steps.metadata.outputs.dependency-type == 'direct:development'
-        run: gh pr merge --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # WHY @main, not a pinned SHA: forkwright/.github publishes no tags, so
+    # dependabot has no version to compare a SHA against and would never bump
+    # one -- a pin that looks maintained but silently never moves. Fleet
+    # convention: triggers + permissions + inputs live in the caller, logic is
+    # delegated, callers pin @main.
+    #
+    # WHY no `secrets: inherit`, when gate-attestation.yml does inherit: that
+    # keyword forwards EVERY repository secret to a workflow in another
+    # repository, and this one reads `secrets.GITHUB_TOKEN` and nothing else --
+    # which a called workflow receives regardless. Inheriting here would widen
+    # the blast radius of a change to forkwright/.github for no capability.
+    uses: forkwright/.github/.github/workflows/dependabot-auto-merge.yml@main
