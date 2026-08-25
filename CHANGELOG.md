@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/forkwright/epistole/compare/v0.2.3...v0.2.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ci:** correct the fetch-metadata pin comment to the version it names ([#126](https://github.com/forkwright/epistole/issues/126)) ([7de9cf2](https://github.com/forkwright/epistole/commit/7de9cf2ef10e79fb7bcc5673363b67dcb67beb7e))
+
 ## [0.2.3](https://github.com/forkwright/epistole/compare/v0.2.2...v0.2.3) (2026-08-18)
 
 
