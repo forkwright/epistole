@@ -28,11 +28,11 @@ A standalone Rust service:
 
 ## Status
 
-Phase 1 - subscriber flows, archive, and operator send functional. SMTP delivery to subscribers tracked at [#3](https://github.com/forkwright/epistole/issues/3).
+Subscriber flows, archive, operator send, and SMTP delivery are all functional.
 
 - Full subscriber lifecycle: `/subscribe` -> confirm link -> `/confirm` -> `/unsubscribe`
 - Archive: `/archive` lists past sends; `/archive/{id}` renders individual issues
-- Operator: `POST /send` (bearer-gated) stores newsletter records; delivery pending SMTP integration
+- Operator: `POST /send` (bearer-gated) stores newsletter records and delivers them via `SmtpMailer` (`src/mailer.rs`), the production `Mailer` wired in `main.rs`
 - Systemd unit and full reverse-proxy deploy runbook in [DEPLOY.md](DEPLOY.md)
 - Subscriber-import tool and `<your-domain>` contact form cutover are follow-up items
 
