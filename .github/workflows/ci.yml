@@ -145,7 +145,8 @@ jobs:
     # `::warning::` marks its own step green too, and FLEET_REPO_TOKEN is
     # not configured for this repo's hosted runners, so kanon-lint showed
     # green on every PR having linted nothing (confirmed empirically:
-    # `kanon gate --tier full` on verda-build found real findings that the
+    # a `kanon gate --tier full` run off the hosted runner found real
+    # findings that the
     # hosted check reported clean on the same commit). A job-level `if`
     # instead reports the WHOLE JOB as SKIPPED -- GitHub's own "did not
     # run" status, distinct in the checks list from both a pass and a

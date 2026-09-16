@@ -5,8 +5,14 @@
 # Forge CI pipeline for forkwright/epistole.
 #
 # Mirrors the fleet-default Rust gate (fmt → check → clippy → nextest →
-# lint) with --jobs 8 caps so concurrent CI runs don't OOM menos. Keep
-# in sync with hamma / dictyon / harmonia until the workspace grows.
+# lint). Build and test concurrency is pinned to 8 because a run is not
+# guaranteed to have the executor to itself. Unpinned, cargo and nextest
+# size their parallelism to the whole machine, so every run that happens
+# to be in flight at the same time claims all of it, and it is their
+# combined footprint rather than any single run's that exhausts memory.
+# Raise or remove the pin only where runs are serialized or each run gets
+# an executor of its own. Keep in sync with hamma / dictyon / harmonia
+# until the workspace grows.
 
 [pipeline]
 stages = ["cargo fmt", "cargo check", "cargo clippy", "cargo nextest", "kanon lint", "cargo-audit", "cargo-deny"]
