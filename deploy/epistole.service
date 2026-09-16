@@ -66,11 +66,11 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @cpu-emulation @debug @keyring @module @obsolete @raw-io @reboot @swap
 
 # Resource limits. MemoryMax= is deliberately absent: basanos'
-# OPERATIONS/no-memory-max-on-service-unit bans it fleet-wide because on
-# forge/archeion hosts it shares a cgroup hierarchy with CI build jobs
-# and can deadlock them (AP.7). That rationale doesn't apply to this
-# host (a dedicated deploy target, not a CI runner), but the check is
-# unconditional for any non-ergates/-ci-runner *.service file, so the
+# OPERATIONS/no-memory-max-on-service-unit bans it because a hard ceiling
+# on a unit that shares a cgroup hierarchy with CI build jobs can
+# deadlock them (AP.7). That rationale doesn't apply to this host (a
+# dedicated deploy target, not a CI runner), but the check is
+# unconditional for any *.service file that isn't a build runner, so the
 # hard ceiling is dropped rather than exempted. MemoryHigh= still
 # throttles the cgroup under memory pressure; the kernel OOM killer is
 # the backstop if that's not enough.
